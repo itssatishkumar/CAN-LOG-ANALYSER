@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QFont, QPixmap, QColor, QLinearGradient, QBrush
 from PySide6.QtCore import Qt, QThread, Signal, QProcess, QTimer
+from updater import check_for_update
 
 
 # -------------------------------------------------------
@@ -983,7 +984,15 @@ class CANLogDebugger(QWidget):
 # -------------------------------------------------------
 # MAIN
 # -------------------------------------------------------
+def run_updater_first():
+    app = QApplication(sys.argv)
+    check_for_update(local_version="1.0.0", app=app)
+    del app
+
+
 def main():
+    run_updater_first()
+
     app = QApplication(sys.argv)
     w = CANLogDebugger()
     w.show()
