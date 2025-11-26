@@ -1,0 +1,87 @@
+{
+  "SoC BEHAVIOR": {
+    "result": "SoC_results.json",
+    "summary": "soc_summary.json",
+    "graph": "soc_plot.png"
+  },
+  "SHUTDOWN PROCESS": {
+    "result": "Shutdown_Process_results.json",
+    "summary": "Shutdown_Process_summary.json",
+    "graph": "Shutdown_Process_plot.png"
+  },
+  "PRECHARGE PROCESS": {
+    "result": "Precharge_Process_results.json",
+    "summary": "Precharge_Process_summary.json",
+    "graph": "Precharge_Process_plot.png"
+  },
+  "BMS STATE TRANSITION": {
+    "result": "BMS_State_transition_results.json",
+    "summary": "BMS_State_transition_summary.json",
+    "graph": "BMS_State_transition_plot.png"
+  },
+  "CELL TEMP IMBALANCE": {
+    "result": "Cell_Temp_Imbalance_results.json",
+    "summary": "Cell_Temp_Imbalance_summary.json",
+    "graph": "Cell_Temp_Imbalance_plot.png"
+  },
+  "BMS PCB TEMP": {
+    "result": "BMS_PCB_Temp_results.json",
+    "summary": "BMS_PCB_Temp_summary.json",
+    "graph": "BMS_PCB_Temp_plot.png"
+  },
+  "ANY BMS ERROR": {
+    "result": "Any_BMS_Error_results.json",
+    "summary": "Any_BMS_Error_summary.json",
+    "graph": "Any_BMS_Error_plot.png"
+  },
+  "FLAG FULL CHARGE DISABLE": {
+    "result": "Flag_Full_Charge_Disable_results.json",
+    "summary": "Flag_Full_Charge_Disable_summary.json",
+    "graph": "Flag_Full_Charge_Disable_plot.png"
+  },
+  "DCLI / DCLO MAP": {
+    "result": "DCLI_DCLO_Map_results.json",
+    "summary": "DCLI_DCLO_Map_summary.json",
+    "graph": "DCLI_DCLO_Map_plot.png"
+  },
+  "EQUIVALENT CYCLE COUNT": {
+    "result": "Equivalent_cycle_count_results.json",
+    "summary": "Equivalent_cycle_count_summary.json",
+    "graph": "Equivalent_cycle_count_plot.png"
+  },
+  "BMS BALANCING": {
+    "result": "BMS_Balancing_results.json",
+    "summary": "BMS_Balancing_summary.json",
+    "graph": "BMS_Balancing_plot.png"
+  },
+  "PRIMARY VS SECONDARY LATCH": {
+    "result": "Primary_vs_Secondary_Latch_results.json",
+    "summary": "Primary_vs_Secondary_Latch_summary.json",
+    "graph": "Primary_vs_Secondary_Latch_plot.png"
+  },
+  "PACK INTERNAL RESISTANCE": {
+    "result": "Pack_Internal_Resistance_results.json",
+    "summary": "Pack_Internal_Resistance_summary.json",
+    "graph": "Pack_Internal_Resistance_plot.png"
+  },
+  "SoC VS VOLTAGE SUMMARY": {
+    "result": "SoC_vs_Voltage_Summary_results.json",
+    "summary": "SoC_vs_Voltage_Summary_summary.json",
+    "graph": "SoC_vs_Voltage_Summary_plot.png"
+  },
+  "CAPACITY CHECK": {
+    "result": "Capacity_check_results.json",
+    "summary": "Capacity_check_summary.json",
+    "graph": "Capacity_check_plot.png"
+  },
+  "BMS CURRENT IN READY MODE": {
+    "result": "BMS_Current_in_Ready_Mode_results.json",
+    "summary": "BMS_Current_in_Ready_Mode_summary.json",
+    "graph": "BMS_Current_in_Ready_Mode_plot.png"
+  },
+  "DRIVE_CHARGE MAX MIN AVG CURRENT": {
+    "result": "Drive_Charge_Max_Min_Avg_Current_results.json",
+    "summary": "Drive_Charge_Max_Min_Avg_Current_summary.json",
+    "graph": "Drive_Charge_Max_Min_Avg_Current_plot.png"
+  }
+}
