@@ -163,8 +163,8 @@ def analyze(frames):
             if bms_st == 0 and not bms_zero_seen:
                 bms_zero_seen = True
 
-            # First non-zero after having been 0 → Reflect SoC
-            if bms_zero_seen and bms_st != 0 and not bms_exit_zero:
+            # First non-zero state after having been 0 → Reflect SoC (ignore zero SoC glitches)
+            if bms_zero_seen and bms_st != 0 and not bms_exit_zero and soc > 0:
                 reflect_soc = soc
                 bms_exit_zero = True
 
