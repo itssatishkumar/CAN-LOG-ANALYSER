@@ -984,9 +984,18 @@ class CANLogDebugger(QWidget):
 # -------------------------------------------------------
 # MAIN
 # -------------------------------------------------------
+def read_local_version():
+    try:
+        with open("version.txt", "r") as f:
+            return f.read().strip()
+    except Exception:
+        return "0.0.0"
+
+
 def run_updater_first():
     app = QApplication(sys.argv)
-    check_for_update(local_version="1.0.0", app=app)
+    local_version = read_local_version()
+    check_for_update(local_version, app)
     del app
 
 
