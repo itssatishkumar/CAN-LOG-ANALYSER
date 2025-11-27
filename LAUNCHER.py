@@ -208,4 +208,4 @@ def check_for_update(local_version, app):
 # -------------------------------------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    check_for_update(local_version="1.0.0", app=app)
+    check_for_update(local_version="1.0.1", app=app)
