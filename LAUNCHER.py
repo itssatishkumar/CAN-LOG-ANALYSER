@@ -984,8 +984,7 @@ class CANLogDebugger(QWidget):
 # -------------------------------------------------------
 # MAIN
 # -------------------------------------------------------
-def run_updater_first():
-    app = QApplication(sys.argv)
+def run_updater_first(app: QApplication):
     version_file = os.path.join(os.path.dirname(__file__), "version.txt")
     try:
         with open(version_file, "r") as f:
@@ -996,13 +995,11 @@ def run_updater_first():
         local_version = "1.0.0"
 
     check_for_update(local_version=local_version, app=app)
-    del app
 
 
 def main():
-    run_updater_first()
-
     app = QApplication(sys.argv)
+    run_updater_first(app)
     w = CANLogDebugger()
     w.show()
     sys.exit(app.exec())
