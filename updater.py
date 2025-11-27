@@ -14,6 +14,7 @@ BRANCH = "main"
 
 RAW_VERSION_URL = f"https://raw.githubusercontent.com/{REPO_USER}/{REPO_NAME}/{BRANCH}/version.txt"
 API_ROOT_URL = f"https://api.github.com/repos/{REPO_USER}/{REPO_NAME}/contents"
+DEFAULT_LOCAL_VERSION = "1.0.0"
 
 
 # -------------------------------------------------------
@@ -30,6 +31,20 @@ GITHUB_TOKEN = load_token()
 
 # HTTP headers for GitHub API
 HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
+
+
+# -------------------------------------------------------
+# HELPER: Read local version file
+# -------------------------------------------------------
+def read_local_version(default=DEFAULT_LOCAL_VERSION):
+    version_path = os.path.join(os.path.dirname(__file__), "version.txt")
+    try:
+        with open(version_path, "r") as f:
+            return f.read().strip() or default
+    except FileNotFoundError:
+        return default
+    except Exception:
+        return default
 
 
 # -------------------------------------------------------
@@ -60,7 +75,7 @@ def download_file(url, target_path, parent=None):
             "Cancel", 0, total if total > 0 else 0, parent
         )
         progress.setWindowModality(Qt.ApplicationModal)
-        progress.setWindowTitle("Updating…")
+        progress.setWindowTitle("Updating...")
         progress.setMinimumDuration(200)
         progress.show()
 
@@ -149,7 +164,7 @@ def check_for_update(local_version, app):
         return
 
     if online_version == local_version:
-        print("✔ Already up to date")
+        print("Already up to date")
         return
 
     reply = QMessageBox.question(
@@ -184,7 +199,7 @@ def check_for_update(local_version, app):
 
     # ---------------- PYTHON SCRIPT MODE -----------------
     progress = QProgressDialog("Updating...", "Cancel", 0, 0, parent)
-    progress.setWindowTitle("Updating…")
+    progress.setWindowTitle("Updating...")
     progress.setWindowModality(Qt.ApplicationModal)
     progress.setMinimumDuration(200)
     progress.show()
@@ -208,4 +223,4 @@ def check_for_update(local_version, app):
 # -------------------------------------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    check_for_update(local_version="1.0.0", app=app)
+    check_for_update(local_version=read_local_version(), app=app)
