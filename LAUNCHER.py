@@ -25,7 +25,7 @@ TEST_CASES = [
     "BMS STATE TRANSITION", "CELL TEMP IMBALANCE", "BMS PCB TEMP",
     "ANY BMS ERROR", "FLAG FULL CHARGE DISABLE", "DCLI / DCLO MAP",
     "EQUIVALENT CYCLE COUNT", "BMS BALANCING",
-    "PRIMARY VS SECONDARY LATCH", "PACK INTERNAL RESISTANCE",
+    "PRIMARY VS SECONDARY LATCH", "MCU OBC ERROR", "AuxCharge_with_Vehicle_state_change",
     "SoC vs VOLTAGE SUMMARY", "CAPACITY CHECK", "BMS CURRENT IN READY MODE", "DRIVE_CHARGE Max Min Avg CURRENT"
 ]
 
@@ -46,11 +46,12 @@ SCRIPT_BY_ROW: Dict[int, str] = {
     9: "Equivalent_cycle_count.py",
     10: "BMS_Balancing.py",
     11: "Primary_vs_Secondary_Latch.py",
-    12: "Pack_Internal_Resistance.py",
+    12: "MCU_OBC_Error.py",
     13: "SoC_vs_Voltage_Summary.py",
     14: "Capacity_check.py",
     15: "BMS_Current_in_Ready_Mode.py",
     16: "DRIVE_CHARGE Max Min Avg CURRENT.py",
+    17: "AuxCharge_with_Vehicle_state_change.py",
 }
 
 
