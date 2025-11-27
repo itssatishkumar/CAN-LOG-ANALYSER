@@ -59,10 +59,10 @@
     "summary": "Primary_vs_Secondary_Latch_summary.json",
     "graph": "Primary_vs_Secondary_Latch_plot.png"
   },
-  "PACK INTERNAL RESISTANCE": {
-    "result": "Pack_Internal_Resistance_results.json",
-    "summary": "Pack_Internal_Resistance_summary.json",
-    "graph": "Pack_Internal_Resistance_plot.png"
+  "MCU OBC ERROR": {
+    "result": "MCU_OBC_Error_results.json",
+    "summary": "MCU_OBC_Error_summary.json",
+    "graph": "MCU_OBC_Error_plot.png"
   },
   "SoC VS VOLTAGE SUMMARY": {
     "result": "SoC_vs_Voltage_Summary_results.json",
@@ -83,5 +83,10 @@
     "result": "Drive_Charge_Max_Min_Avg_Current_results.json",
     "summary": "Drive_Charge_Max_Min_Avg_Current_summary.json",
     "graph": "Drive_Charge_Max_Min_Avg_Current_plot.png"
+  },
+  "AuxCharge_with_Vehicle_state_change": {
+    "result": "AuxCharge_with_Vehicle_state_change_results.json",
+    "summary": "AuxCharge_with_Vehicle_state_change_summary.json",
+    "graph": "AuxCharge_with_Vehicle_state_change_plot.png"
   }
 }
