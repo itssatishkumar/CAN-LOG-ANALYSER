@@ -92,6 +92,9 @@ def main():
     import matplotlib.dates as mdates
 
     out_dir = Path(__file__).resolve().parent
+    stem_primary = "Drive_Charge_Max_Min_Avg_Current"  # matches file_name.json entries
+    stem_launcher = Path(__file__).stem  # current script stem (with underscores)
+    stem_with_spaces = "DRIVE_CHARGE Max Min Avg CURRENT"  # legacy spaced naming
 
     plt.figure(figsize=(10, 4))
     valid_points = [(t, c) for t, c in zip(timestamps, currents) if t is not None]
@@ -138,24 +141,62 @@ def main():
     plt.grid(True, linestyle="--", alpha=0.5)
     plt.tight_layout()
 
-    plot_path = out_dir / "Drive_Charge_Max_Min_Avg_Current_plot.png"
+    plot_path = out_dir / f"{stem_primary}_plot.png"
     plt.savefig(plot_path, dpi=150)
     plt.close()
 
-    summary_path = out_dir / "Drive_Charge_Max_Min_Avg_Current_summary.json"
+    summary_path = out_dir / f"{stem_primary}_summary.json"
 
+    # GUI expects numeric values, not strings
     summary_table = {
-        "Max Discharge (Most Negative) [A]": f"{max_negative:.2f}",
-        "Max Charge/Regen (Most Positive) [A]": f"{max_positive:.2f}",
-        "Average Current (|I| >= 3A) [A]": f"{avg_current:.2f}"
+        "Max Discharge (Most Negative) [A]": round(max_negative, 2),
+        "Max Charge/Regen (Most Positive) [A]": round(max_positive, 2),
+        "Average Current (|I| >= 3A) [A]": round(avg_current, 2)
     }
 
     summary_payload = {"Summary_Table": summary_table}
-    summary_path.write_text(json.dumps(summary_payload, indent=4), encoding="utf-8")
+    summary_text = json.dumps(summary_payload, indent=4)
+    summary_path.write_text(summary_text, encoding="utf-8")
 
-    result_path = out_dir / "Drive_Charge_Max_Min_Avg_Current_results.json"
+    result_path = out_dir / f"{stem_primary}_results.json"
     result_status = "PASS" if plot_path.exists() and summary_path.exists() else "FAIL"
-    result_path.write_text(json.dumps({"Result": result_status}), encoding="utf-8")
+    result_text = json.dumps({"Result": result_status})
+    result_path.write_text(result_text, encoding="utf-8")
+
+    # Also produce copies that match the script stem (launcher defaults) and the legacy spaced names.
+    fallback_plot = out_dir / f"{stem_launcher}_plot.png"
+    fallback_summary = out_dir / f"{stem_launcher}_summary.json"
+    fallback_result = out_dir / f"{stem_launcher}_results.json"
+    legacy_plot = out_dir / f"{stem_with_spaces}_plot.png"
+    legacy_summary = out_dir / f"{stem_with_spaces}_summary.json"
+    legacy_result = out_dir / f"{stem_with_spaces}_results.json"
+
+    for target, writer in [
+        (fallback_plot, lambda: fallback_plot.write_bytes(plot_path.read_bytes())),
+        (fallback_summary, lambda: fallback_summary.write_text(summary_text, encoding="utf-8")),
+        (fallback_result, lambda: fallback_result.write_text(result_text, encoding="utf-8")),
+        (legacy_plot, lambda: legacy_plot.write_bytes(plot_path.read_bytes())),
+        (legacy_summary, lambda: legacy_summary.write_text(summary_text, encoding="utf-8")),
+        (legacy_result, lambda: legacy_result.write_text(result_text, encoding="utf-8")),
+    ]:
+        if target != plot_path and target != summary_path and target != result_path:
+            try:
+                writer()
+            except Exception:
+                pass
+
+    if fallback_summary != summary_path:
+        try:
+            fallback_summary.write_text(summary_text, encoding="utf-8")
+        except Exception:
+            pass
+
+    if fallback_result != result_path:
+        try:
+            fallback_result.write_text(result_text, encoding="utf-8")
+        except Exception:
+            pass
+
 
 
 if __name__ == "__main__":

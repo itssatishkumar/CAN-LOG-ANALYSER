@@ -1,103 +1,226 @@
 import os
+import sys
 import requests
+import subprocess
+from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
+from PySide6.QtCore import Qt
 
-# -----------------------------------------------------
-# CONFIGURATION
-# -----------------------------------------------------
-USERNAME = "YOUR_GITHUB_USERNAME"
-REPO     = "YOUR_REPO_NAME"
-BRANCH   = "main"   # or master
+# -------------------------------------------------------
+# GITHUB REPO CONFIG
+# -------------------------------------------------------
+REPO_USER = "itssatishkumar"
+REPO_NAME = "CAN-LOG-ANALYSER"
+BRANCH = "main"
 
-API_URL = f"https://api.github.com/repos/{USERNAME}/{REPO}/contents"
-VERSION_URL = f"https://raw.githubusercontent.com/{USERNAME}/{REPO}/{BRANCH}/version.txt"
-LOCAL_VERSION_FILE = "version.txt"
-# -----------------------------------------------------
-
-
-# -----------------------------------------------------
-# VERSION CHECKING
-# -----------------------------------------------------
-def get_local_version():
-    if not os.path.exists(LOCAL_VERSION_FILE):
-        return "0.0.0"
-    return open(LOCAL_VERSION_FILE).read().strip()
-
-def get_remote_version():
-    r = requests.get(VERSION_URL)
-    return r.text.strip()
-
-def is_update_available():
-    return get_local_version() != get_remote_version()
-# -----------------------------------------------------
+RAW_VERSION_URL = f"https://raw.githubusercontent.com/{REPO_USER}/{REPO_NAME}/{BRANCH}/version.txt"
+API_ROOT_URL = f"https://api.github.com/repos/{REPO_USER}/{REPO_NAME}/contents"
+DEFAULT_LOCAL_VERSION = "1.0.0"
 
 
-# -----------------------------------------------------
-# FILE & FOLDER SYNC
-# -----------------------------------------------------
-def sync_folder(git_path, local_path):
-    """ Sync a folder from GitHub to local PC recursively. """
+# -------------------------------------------------------
+# LOAD GITHUB TOKEN (Important for avoiding API limits)
+# -------------------------------------------------------
+def load_token():
+    token_file = "GITHUB_TOKEN.txt"
+    if os.path.exists(token_file):
+        with open(token_file, "r") as f:
+            return f.read().strip()
+    return None
 
-    url = f"{API_URL}/{git_path}?ref={BRANCH}"
-    response = requests.get(url).json()
+GITHUB_TOKEN = load_token()
 
-    # Error handler
-    if isinstance(response, dict) and "message" in response:
-        print("Error:", response["message"])
-        return
+# HTTP headers for GitHub API
+HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
 
-    # Ensure local folder exists
+
+# -------------------------------------------------------
+# HELPER: Read local version file
+# -------------------------------------------------------
+def read_local_version(default=DEFAULT_LOCAL_VERSION):
+    version_path = os.path.join(os.path.dirname(__file__), "version.txt")
+    try:
+        with open(version_path, "r") as f:
+            return f.read().strip() or default
+    except FileNotFoundError:
+        return default
+    except Exception:
+        return default
+
+
+# -------------------------------------------------------
+# HELPER: Fetch plain text from GitHub
+# -------------------------------------------------------
+def get_text_file_content(url):
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        r.raise_for_status()
+        return r.text.strip()
+    except Exception as e:
+        print(f"Error fetching {url}: {e}")
+        return None
+
+
+# -------------------------------------------------------
+# HELPER: Download a file with progress bar
+# -------------------------------------------------------
+def download_file(url, target_path, parent=None):
+    try:
+        r = requests.get(url, headers=HEADERS, stream=True, timeout=20)
+        r.raise_for_status()
+
+        total = int(r.headers.get("content-length", 0))
+
+        progress = QProgressDialog(
+            f"Downloading {os.path.basename(target_path)}...",
+            "Cancel", 0, total if total > 0 else 0, parent
+        )
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.setWindowTitle("Updating...")
+        progress.setMinimumDuration(200)
+        progress.show()
+
+        downloaded = 0
+        chunk_size = 8192
+
+        with open(target_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+
+                    if total > 0:
+                        progress.setValue(downloaded)
+
+                    QApplication.processEvents()
+                    if progress.wasCanceled():
+                        return False
+
+        progress.close()
+        return True
+
+    except Exception as e:
+        print(f"Download failed: {e}")
+        return False
+
+
+# -------------------------------------------------------
+# HELPER: Running as EXE?
+# -------------------------------------------------------
+def is_running_as_exe():
+    _, ext = os.path.splitext(sys.argv[0])
+    return ext.lower() == ".exe"
+
+
+# -------------------------------------------------------
+# RECURSIVE GITHUB FOLDER SYNC (DOWNLOADING EVERYTHING)
+# -------------------------------------------------------
+def sync_github_folder(api_url, local_path, progress):
+    try:
+        r = requests.get(api_url, headers=HEADERS, timeout=20)
+        r.raise_for_status()
+        items = r.json()
+    except Exception as e:
+        QMessageBox.warning(None, "Update Failed", f"Error fetching GitHub folder:\n{e}")
+        return False
+
     if not os.path.exists(local_path):
-        os.makedirs(local_path)
+        os.makedirs(local_path, exist_ok=True)
 
-    for item in response:
+    for item in items:
         name = item["name"]
         item_type = item["type"]
-        git_item_path = item["path"]
+        download_url = item.get("download_url")
+        next_api_url = item["url"]
         local_item_path = os.path.join(local_path, name)
 
-        # If it is a file → download it
+        # Skip unwanted folders
+        if name == "__pycache__":
+            continue
+
         if item_type == "file":
-            download_file(item["download_url"], local_item_path)
+            progress.setLabelText(f"Downloading: {name}")
+            QApplication.processEvents()
 
-        # If it is a folder → recursively sync it
+            if not download_file(download_url, local_item_path, parent=None):
+                return False
+
         elif item_type == "dir":
-            sync_folder(git_item_path, local_item_path)
+            # Recurse into subfolder
+            if not sync_github_folder(next_api_url, local_item_path, progress):
+                return False
+
+    return True
 
 
-def download_file(url, local_path):
-    """ Download a single file from GitHub into local folder. """
-    print(f"Downloading: {local_path}")
-    data = requests.get(url).content
+# -------------------------------------------------------
+# MAIN UPDATE FUNCTION
+# -------------------------------------------------------
+def check_for_update(local_version, app):
+    parent = app.activeWindow() if app else None
 
-    with open(local_path, "wb") as f:
-        f.write(data)
-# -----------------------------------------------------
-
-
-# -----------------------------------------------------
-# MAIN UPDATE FLOW
-# -----------------------------------------------------
-def run_updater():
-    local = get_local_version()
-    remote = get_remote_version()
-
-    print("Local version :", local)
-    print("Git version   :", remote)
-
-    if local == remote:
-        print("\n✔ Your software is already up to date.")
+    online_version = get_text_file_content(RAW_VERSION_URL)
+    if not online_version:
+        QMessageBox.warning(parent, "Update Error", "Could not read version.txt from GitHub.")
         return
 
-    choice = input("\nNew update available. Update now? (y/n): ").strip().lower()
-    if choice != "y":
-        print("❌ Update canceled.")
+    if online_version == local_version:
+        print("Already up to date")
         return
 
-    print("\n🔄 Updating files...\n")
-    sync_folder("", ".")
-    print("\n✅ Update completed successfully!")
-# -----------------------------------------------------
+    reply = QMessageBox.question(
+        parent,
+        "Update Available",
+        f"A new version ({online_version}) is available.\n\nDo you want to update?",
+        QMessageBox.Yes | QMessageBox.No
+    )
+    if reply != QMessageBox.Yes:
+        return
+
+    target_folder = os.path.dirname(os.path.abspath(sys.argv[0]))
+
+    # ----------------- EXE UPDATE MODE -------------------
+    if is_running_as_exe():
+        exe_url_file = f"https://raw.githubusercontent.com/{REPO_USER}/{REPO_NAME}/{BRANCH}/appversion.txt"
+        exe_download_url = get_text_file_content(exe_url_file)
+
+        if not exe_download_url:
+            QMessageBox.warning(parent, "Update Failed", "Could not fetch EXE URL.")
+            return
+
+        new_exe_path = os.path.join(target_folder, "UPDATED_APP.exe")
+        updater_path = os.path.join(target_folder, "updater.exe")
+
+        if not download_file(exe_download_url, new_exe_path, parent):
+            QMessageBox.warning(parent, "Update Failed", "Failed to download EXE.")
+            return
+
+        subprocess.Popen([updater_path, sys.argv[0], new_exe_path], shell=True)
+        sys.exit(0)
+
+    # ---------------- PYTHON SCRIPT MODE -----------------
+    progress = QProgressDialog("Updating...", "Cancel", 0, 0, parent)
+    progress.setWindowTitle("Updating...")
+    progress.setWindowModality(Qt.ApplicationModal)
+    progress.setMinimumDuration(200)
+    progress.show()
+
+    if not sync_github_folder(API_ROOT_URL, target_folder, progress):
+        QMessageBox.warning(parent, "Update Failed", "Some files could not be updated.")
+        return
+
+    # Save version
+    with open(os.path.join(target_folder, "version.txt"), "w") as vf:
+        vf.write(online_version)
+
+    progress.close()
+
+    QMessageBox.information(parent, "Update Complete", "Update installed.\nPlease restart application.")
+    sys.exit(0)
 
 
+# -------------------------------------------------------
+# RUN DIRECTLY
+# -------------------------------------------------------
 if __name__ == "__main__":
-    run_updater()
+    app = QApplication(sys.argv)
+    check_for_update(local_version=read_local_version(), app=app)

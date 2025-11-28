@@ -92,7 +92,7 @@ def has_ack(fr: Frame) -> bool:
 
 
 # -------------------------------------------------------
-# FIND 602 → (2 → 0 ) TRANSITIONS
+# FIND 602 -> (2 or 1 -> 0) TRANSITIONS
 # -------------------------------------------------------
 def get_vehicle_2_to_0_transitions(frames):
     times = []
@@ -104,7 +104,7 @@ def get_vehicle_2_to_0_transitions(frames):
 
         state = decode_vehicle_state(fr)
 
-        if prev == 0x02 and state == 0x00:
+        if prev in (0x02, 0x01) and state == 0x00:
             times.append(_ts_to_float(fr.ts))
 
         prev = state
@@ -116,7 +116,7 @@ def get_vehicle_2_to_0_transitions(frames):
 # SHUTDOWN ANALYSIS CORE
 # -------------------------------------------------------
 def analyze(frames):
-    # All observed 2->0 transitions in log (anywhere)
+    # All observed 1/2->0 transitions in log (anywhere)
     veh_2to0 = get_vehicle_2_to_0_transitions(frames)
 
     cycles = []
@@ -163,8 +163,8 @@ def analyze(frames):
             if bms_st == 0 and not bms_zero_seen:
                 bms_zero_seen = True
 
-            # First non-zero after having been 0 → Reflect SoC
-            if bms_zero_seen and bms_st != 0 and not bms_exit_zero:
+            # First non-zero state after having been 0 → Reflect SoC (ignore zero SoC glitches)
+            if bms_zero_seen and bms_st != 0 and not bms_exit_zero and soc > 0:
                 reflect_soc = soc
                 bms_exit_zero = True
 
@@ -206,7 +206,7 @@ def analyze(frames):
                 ack_time_lbl = f"{round(ack_time - ts_shut, 3)}s"
 
             # ----- Vehicle timing -----
-            # Only judge VCU if we actually have at least one 2->0 transition in the log.
+            # Only judge VCU if we actually have at least one 1/2->0 transition in the log.
             if veh_2to0:
                 best_dt = None
                 for t in veh_2to0:
@@ -216,13 +216,13 @@ def analyze(frames):
                             best_dt = dt
 
                 if best_dt is None:
-                    # We have 2->0 transitions in log, but NONE were within 2s of this shutdown → real misalignment
+                    # We have 1/2->0 transitions in log, but NONE were within 2s of this shutdown → real misalignment
                     veh_timing = "VCU_FAULT(>2s)"
                 else:
                     veh_timing = f"OK({round(abs(best_dt),3)}s)"
             else:
-                # No 2->0 transition anywhere in log → do NOT blame VCU/BMS, just mark as incomplete.
-                veh_timing = "INCOMPLETE(no 2->0 transition)"
+                # No 1/2->0 transition anywhere in log → do NOT blame VCU/BMS, just mark as incomplete.
+                veh_timing = "INCOMPLETE(no 1/2->0 transition)"
 
             # ----- Final decision -----
             final = "PASS"
@@ -240,12 +240,12 @@ def analyze(frames):
             if final == "FAIL":
 
                 if veh_timing.startswith("VCU_FAULT"):
-                    remark = "VCU Fault - Vehicle 2->0 and shutdown not aligned within 2s."
+                    remark = "VCU Fault - Vehicle 1/2->0 and shutdown not aligned within 2s."
 
                 elif veh_timing.startswith("INCOMPLETE"):
                     # This branch technically won't hit with final=FAIL,
                     # but kept for clarity if logic later changes.
-                    remark = "Data incomplete - 2->0 transition not fully captured in log."
+                    remark = "Data incomplete - 1/2->0 transition not fully captured in log."
 
                 elif ack_state == "ACK_MISSING":
                     remark = f"BMS Fault - Expected ACK missing when MCU >= 105 (MCU={mcu_at_shut})."
