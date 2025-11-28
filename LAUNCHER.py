@@ -47,11 +47,19 @@ SCRIPT_BY_ROW: Dict[int, str] = {
     10: "BMS_Balancing.py",
     11: "Primary_vs_Secondary_Latch.py",
     12: "MCU_OBC_Error.py",
+<<<<<<< HEAD
     13: "AuxCharge_with_Vehicle_state_change.py",
     14: "SoC_vs_Voltage_Summary.py",
     15: "Capacity_check.py",
     16: "BMS_Current_in_Ready_Mode.py",
     17: "DRIVE_CHARGE_Max_Min_Avg_CURRENT.py",
+=======
+    13: "SoC_vs_Voltage_Summary.py",
+    14: "Capacity_check.py",
+    15: "BMS_Current_in_Ready_Mode.py",
+    16: "DRIVE_CHARGE Max Min Avg CURRENT.py",
+    17: "AuxCharge_with_Vehicle_state_change.py",
+>>>>>>> 9b7a42476047bc2d0ed7230df2dfd59b31a2e417
 }
 
 
