@@ -1,0 +1,7 @@
+{
+    "Summary_Table": {
+        "Max Discharge (Most Negative) [A]": "-176.44",
+        "Max Charge/Regen (Most Positive) [A]": "173.95",
+        "Average Current (|I| >= 3A) [A]": "-54.41"
+    }
+}

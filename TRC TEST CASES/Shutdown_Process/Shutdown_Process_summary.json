@@ -1,0 +1,6 @@
+{
+    "table_header": "Cycle |  Shut_ts | StartSoC | ReflectSoC |  Delta |   SoC |   MCU |   ACK Time |     ACK_State |      VehTime |  Final | Remark",
+    "table_rows": [
+        "    1 |       -- |       -- |         -- |     -- | N/A   |    -- | --         | NO_SHUT       | --           | N/A    | No shutdown events found in the TRC log."
+    ]
+}
