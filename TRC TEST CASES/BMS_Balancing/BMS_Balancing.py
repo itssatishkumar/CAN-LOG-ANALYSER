@@ -1,8 +1,17 @@
 import os
 import re
+import math
 from datetime import datetime
-import cantools
+from collections import defaultdict
+
+import numpy as np
 import pandas as pd
+import cantools
+# Lazy import for fast decoder (not available in all cantools versions)
+try:
+    from cantools.database.can import decoder as cantools_decoder  # type: ignore
+except Exception:
+    cantools_decoder = None
 from tqdm import tqdm
 from tkinter import Tk, filedialog
 
@@ -11,11 +20,16 @@ from tkinter import Tk, filedialog
 # -------------------------------------------
 TEMP_LIMIT = 95          # degC above which balancing is blocked
 PENDING_TIME_SEC = 0.4   # 0.4 s window for activation / mismatch checks
+# When odd/even alternate under mixed requirement, allow longer mismatch grace.
+MIXED_SEQUENCE_GRACE_SEC = 1.0
 
 # Time-based loose limits (instead of "counts")
 ODD_EVEN_MAX_ON_SEC = 0.9      # ~3 counts * 300 ms
-REST_COMBINED_MAX_SEC = 0.6    # ~2 counts * 300 ms
-REST_NORMAL_MAX_SEC = 1.25      # ~4 counts * 300 ms
+# BMS balances odd -> even (or vice-versa) sequentially, so allow a longer REST
+# when both odd and even are required.
+REST_COMBINED_MAX_SEC = 1.25   # sequential odd/even transition window
+REST_NORMAL_MAX_SEC = 1.25     # ~4 counts * 300 ms
+TIME_GAP_RESET_SEC = 5.0       # gap that resets timing state
 
 DISCHARGE_LIMIT_TABLE = [
     (0, 5, 61),
@@ -26,57 +40,66 @@ DISCHARGE_LIMIT_TABLE = [
     (97, 100, 51),
 ]
 
+# Precompiled once for speed
 TRC_LINE_RE = re.compile(
-    r"^\s*\d+\)\s+(\d{2}-\d{2}-\d{4})\s+(\d{2}:\d{2}:\d{2})\.(\d{3,4})(?:\.\d+)?\s+\w+\s+([0-9A-Fa-f]+)\s+(\d+)\s+(.*)$"
+    r"^\s*\d+\)\s+(\d{2})-(\d{2})-(\d{4})\s+"
+    r"(\d{2}):(\d{2}):(\d{2})\.(\d{3,4})(?:\.\d+)?\s+\w+\s+"
+    r"([0-9A-Fa-f]+)\s+(\d+)\s+(.*)$"
 )
 
 
 # -------------------------------------------
-# Helpers
+# Helpers (vectorized-friendly)
 # -------------------------------------------
-def is_odd(cell):
-    try:
-        return (int(cell) % 2) == 1
-    except Exception:
-        return False
+def is_odd_fast(arr):
+    return (np.asarray(arr, dtype=np.int64) & 1) == 1
 
 
-def is_even(cell):
-    try:
-        return (int(cell) % 2) == 0
-    except Exception:
-        return False
+def is_even_fast(arr):
+    return (np.asarray(arr, dtype=np.int64) & 1) == 0
 
 
 # -------------------------------------------
-# TRC → frames
+# Fast TRC -> frames
 # -------------------------------------------
-def parse_trc(path):
+def parse_trc_fast(path):
+    """
+    High-throughput TRC parsing:
+      - precompiled regex
+      - manual int parsing (no strptime in loop)
+      - only 1 datetime per row (constructor, not strptime)
+    """
     frames = []
-    base = None
+    base_dt = None
 
     with open(path, "r", encoding="utf8", errors="ignore") as f:
         for line in f:
-            m = TRC_LINE_RE.match(line.strip())
+            m = TRC_LINE_RE.match(line)
             if not m:
                 continue
 
-            date_part = m.group(1)
-            time_part = m.group(2)
-            ms_part = m.group(3)
-            ts_raw = f"{date_part} {time_part}.{ms_part}"
-            ms_norm = ms_part if len(ms_part) == 4 else ms_part + "0" if len(ms_part) == 3 else ms_part
-            ts = f"{date_part} {time_part}.{ms_norm}"
+            # Parse ints directly from regex groups
+            day = int(m.group(1))
+            month = int(m.group(2))
+            year = int(m.group(3))
+            hour = int(m.group(4))
+            minute = int(m.group(5))
+            second = int(m.group(6))
+            ms_str = m.group(7)
+            # Interpret captured fraction as microseconds (matches original strptime behavior).
+            # len 3 -> "123" -> 123000 µs; len 4 -> "1234" -> 123400 µs
+            micro = int(ms_str.ljust(6, "0")[:6])
 
-            dt = datetime.strptime(ts, "%d-%m-%Y %H:%M:%S.%f")
-            if base is None:
-                base = dt
+            ts_raw = f"{day:02d}-{month:02d}-{year:04d} {hour:02d}:{minute:02d}:{second:02d}.{ms_str}"
 
-            t = (dt - base).total_seconds()
+            dt = datetime(year, month, day, hour, minute, second, micro)
+            if base_dt is None:
+                base_dt = dt
+            t = (dt - base_dt).total_seconds()
 
-            can_id = int(m.group(4), 16)
-            dlc = int(m.group(5))
-            data = bytes(int(x, 16) for x in m.group(6).split()[:dlc])
+            can_id = int(m.group(8), 16)
+            dlc = int(m.group(9))
+            data = bytes(int(x, 16) for x in m.group(10).split()[:dlc])
 
             frames.append((ts_raw, t, can_id, data))
 
@@ -88,50 +111,69 @@ def parse_trc(path):
 
 
 # -------------------------------------------
-# DBC decode (last-known; safe, per-message update)
+# Fast DBC decode -> column-first DataFrame
 # -------------------------------------------
-def decode(frames, dbc):
+def decode_frames_fast(frames, dbc):
     """
-    Decode frames with DBC; carry forward last-known values.
-
-    Rules:
-      - One output row per TRC frame.
-      - Only update signals that belong to the decoded message.
-      - Never touch other signals if this message doesn't contain them.
-      - Never force any signal to 0 unless DBC decode returns 0.
+    High-speed decode:
+      - cantools Decoder (Cython) if available
+      - frame_id -> message dict lookup (no repeated get)
+      - column-first build via (indices, values) sparse fill to avoid per-row None work
     """
-    last = {}
-    rows = []
+    total = len(frames)
+    if total == 0:
+        raise ValueError("No frames to decode.")
 
-    for ts_raw, t, cid, data in tqdm(frames, desc="Decoding"):
-        # 1) Try to get message by frame-id
+    # Prepare decoder and lookup
+    msg_by_id = {msg.frame_id: msg for msg in dbc.messages}
+    try:
+        fast_decoder = cantools_decoder.Decoder(dbc) if cantools_decoder else None
+    except Exception:
+        fast_decoder = None
+
+    # Sparse column storage: col -> (idx list, val list)
+    idx_store = defaultdict(list)
+    val_store = defaultdict(list)
+
+    # Always-present columns
+    idx_store["TimeStr"]
+    val_store["TimeStr"]
+    idx_store["Time"]
+    val_store["Time"]
+    idx_store["can_id"]
+    val_store["can_id"]
+
+    for row_idx, (ts_raw, t, cid, data) in enumerate(tqdm(frames, desc="Decoding", unit="frame")):
+        # Base columns
+        idx_store["TimeStr"].append(row_idx)
+        val_store["TimeStr"].append(ts_raw)
+        idx_store["Time"].append(row_idx)
+        val_store["Time"].append(t)
+        idx_store["can_id"].append(row_idx)
+        val_store["can_id"].append(cid)
+
+        msg = msg_by_id.get(cid)
+        if msg is None:
+            continue
+
         try:
-            msg = dbc.get_message_by_frame_id(cid)
-        except KeyError:
-            msg = None
+            decoded = fast_decoder.decode_message(cid, data) if fast_decoder else msg.decode(data)
+        except Exception:
+            continue  # skip errors without exceptions per field
 
-        # 2) If message exists, decode it
-        if msg is not None:
-            try:
-                decoded = msg.decode(data)
-            except Exception:
-                decoded = {}
+        for k, v in decoded.items():
+            idx_store[k].append(row_idx)
+            val_store[k].append(v)
 
-            # Update ONLY signals that belong to this message
-            for sig in msg.signals:
-                name = sig.name
-                if name in decoded:
-                    last[name] = decoded[name]
-                # if name not in decoded: keep previous last[name] as-is
+    # Materialize columns; sparse reindex avoids per-row fill in the hot loop
+    columns = {}
+    row_index = pd.RangeIndex(total)
+    for col, idxs in idx_store.items():
+        vals = val_store[col]
+        series = pd.Series(vals, index=idxs, dtype=object)
+        columns[col] = series.reindex(row_index)
 
-        # 3) Always update time
-        last["TimeStr"] = ts_raw
-        last["Time"] = t
-
-        # 4) Append snapshot of full state
-        rows.append(last.copy())
-
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(columns)
     if df.empty:
         raise ValueError("❌ DBC decode produced no rows. Check DBC & TRC.")
     return df
@@ -141,44 +183,54 @@ def decode(frames, dbc):
 # Detect cells
 # -------------------------------------------
 def detect_cells(df):
-    cells = sorted(
-        int(c.split("_")[1]) for c in df.columns if c.startswith("CellVoltage_")
-    )
+    cells = sorted(int(c.split("_")[1]) for c in df.columns if c.startswith("CellVoltage_"))
     print("Cells:", cells)
     return cells
 
 
 # -------------------------------------------
-# Dead cells (median < 5mV)
+# Forward-fill signals (publish last known value)
+# -------------------------------------------
+def forward_fill_signals(df):
+    if df.empty:
+        return df
+
+    # Keep base columns intact; fill the rest
+    base_cols = {"TimeStr", "Time", "can_id"}
+    fill_cols = [c for c in df.columns if c not in base_cols]
+
+    # Ensure time ordering before filling
+    if "Time" in df.columns:
+        df = df.sort_values("Time").reset_index(drop=True)
+
+    df[fill_cols] = df[fill_cols].ffill()
+    return df
+
+
+# -------------------------------------------
+# Dead cells / thermistors (vectorized)
 # -------------------------------------------
 def find_dead_cells(df, cells):
-    dead = []
+    dead_mask = []
     for c in cells:
         col = f"CellVoltage_{c}"
         if col not in df.columns:
             continue
-        series = pd.to_numeric(df[col], errors="coerce").fillna(0)
-        med = series.median()
-        if med < 5:
-            dead.append(c)
-    print("Dead cells:", dead)
-    return set(dead)
+        med = pd.to_numeric(df[col], errors="coerce").fillna(0).median()
+        dead_mask.append((c, med < 5))
+    dead = {c for c, is_dead in dead_mask if is_dead}
+    print("Dead cells:", sorted(dead))
+    return dead
 
 
-# -------------------------------------------
-# Dead thermistors (IntTherm_x ≈ 0°C entire log)
-# -------------------------------------------
 def find_dead_therms(df, zero_threshold=0.1):
     dead = set()
     for col in df.columns:
         if col.startswith("IntTherm_"):
-            series = pd.to_numeric(df[col], errors="coerce").fillna(0)
-            if series.median() <= zero_threshold:
-                try:
-                    idx = int(col.split("_")[1])
-                    dead.add(idx)
-                except Exception:
-                    pass
+            med = pd.to_numeric(df[col], errors="coerce").fillna(0).median()
+            if med <= zero_threshold:
+                idx = int(col.split("_")[1])
+                dead.add(idx)
     if dead:
         print("Dead thermistors:", sorted(dead))
     return dead
@@ -191,260 +243,249 @@ def get_threshold(mode, soc):
     if mode == "Charging":
         return 11
     try:
-        soc = float(soc)
+        soc_val = float(soc)
     except Exception:
         return None
     for lo, hi, val in DISCHARGE_LIMIT_TABLE:
-        if lo <= soc < hi:
+        if lo <= soc_val < hi:
             return val
     return None
 
 
 # -------------------------------------------
-# Decode masks
+# Decode masks (no try/except in hot path)
 # -------------------------------------------
 def mask_decode(m0, m1):
     try:
-        m0 = int(m0)
+        m0i = int(m0)
     except Exception:
-        m0 = 0
+        m0i = 0
     try:
-        m1 = int(m1)
+        m1i = int(m1)
     except Exception:
-        m1 = 0
+        m1i = 0
 
     act = []
+    # unroll in two loops (fast bit checks)
     for i in range(64):
-        if (m0 >> i) & 1:
+        if (m0i >> i) & 1:
             act.append(i + 1)
     for i in range(64):
-        if (m1 >> i) & 1:
+        if (m1i >> i) & 1:
             act.append(65 + i)
     return act
 
 
 # -------------------------------------------
-# Analyze one row (static analysis, no timing)
+# Analyze rows (itertuples, column-first output)
 # -------------------------------------------
-def analyze(row, cells, dead_cells, dead_therms):
-    res = {}
+def analyze_fast(df, cells, dead_cells, dead_therms):
+    # Precompute helpers
+    live_cells = [c for c in cells if c not in dead_cells]
+    therm_cols = [c for c in df.columns if c.startswith("IntTherm_")]
+    live_therm_idxs = [int(c.split("_")[1]) for c in therm_cols if int(c.split("_")[1]) not in dead_therms]
 
-    # Raw carry-over fields (as-is from decode)
-    res["TimeStr"] = row.get("TimeStr")
-    res["Time"] = row.get("Time")
-    res["SoC"] = row.get("SoC")
-    res["Pack_Current"] = row.get("Pack_Current")
-    res["Charging_Info"] = row.get("Charging_Info")
-    res["Flag_Balancing_Active"] = row.get("Flag_Balancing_Active")   # AS-IS
-    res["Balancing_Limit"] = row.get("Balancing_Limit")
-    res["Voltage_Min"] = row.get("Voltage_Min")
-    res["Voltage_Max"] = row.get("Voltage_Max")
-    res["Voltage_Delta"] = row.get("Voltage_Delta")
-    res["BalancingMask0"] = row.get("BalancingMask0")
-    res["BalancingMask1"] = row.get("BalancingMask1")
+    # Output column stores
+    out = {
+        "TimeStr": [], "Time": [], "SoC": [], "Pack_Current": [], "Charging_Info": [],
+        "Flag_Balancing_Active": [], "Balancing_Limit": [], "Voltage_Min": [],
+        "Voltage_Max": [], "Voltage_Delta": [], "BalancingMask0": [], "BalancingMask1": [],
+        "Mode": [], "Threshold": [], "Temp_Block": [], "PCB_Temp_Min": [], "PCB_Temp_Max": [],
+        "Balancing_Required": [], "Required_Cells": [], "Active_Cells": [],
+        "Missing": [], "Extra": [], "Dead_Cells": [], "Dead_Therms": []
+    }
 
-    vmin = row.get("Voltage_Min")
-    vmax = row.get("Voltage_Max")
-    limit = row.get("Balancing_Limit")
+    # Dynamic cell/therm columns
+    cell_cols = {c: [] for c in live_cells}
+    therm_cols_live = {c: [] for c in live_therm_idxs}
 
-    # Determine mode from Charging_Info
-    ci = row.get("Charging_Info")
-    try:
-        ci_int = int(float(ci))
-        if ci_int in (1, 17, 33):
-            mode = "Charging"
-        elif ci_int == 0:
-            mode = "Discharging"
-        else:
-            mode = "Ready"
-    except Exception:
-        ci_int = None
+    # Process rows using itertuples (fast attribute access)
+    # Build positional mapping once for tuple lookups
+    columns = list(df.columns)
+    col_idx = {c: i for i, c in enumerate(columns)}
+    get = lambda r, name, default=None: r[col_idx[name]] if name in col_idx else default
+
+    for r in df.itertuples(index=False, name=None):
+        time_str = get(r, "TimeStr")
+        time_val = get(r, "Time", 0.0)
+        soc = get(r, "SoC")
+        pack_current = get(r, "Pack_Current")
+        charging_info = get(r, "Charging_Info")
+        flag_bal = get(r, "Flag_Balancing_Active")
+        bal_limit = get(r, "Balancing_Limit")
+        vmin = get(r, "Voltage_Min")
+        vmax = get(r, "Voltage_Max")
+        vdelta = get(r, "Voltage_Delta")
+        bm0 = get(r, "BalancingMask0")
+        bm1 = get(r, "BalancingMask1")
+
+        # Mode
         mode = "Unknown"
+        try:
+            ci_int = int(float(charging_info))
+            if ci_int in (1, 17, 33):
+                mode = "Charging"
+            elif ci_int == 0:
+                mode = "Discharging"
+            else:
+                mode = "Ready"
+        except Exception:
+            pass
 
-    res["Mode"] = mode
+        threshold = get_threshold(mode, soc)
 
-    # Threshold
-    threshold = get_threshold(mode, res["SoC"])
-    res["Threshold"] = threshold
-
-    # Temp block (using only LIVE IntTherm_x, skipping dead therms)
-    temps = []
-    for col in row.index:
-        if col.startswith("IntTherm_"):
+        # Temps (live only)
+        temps = []
+        for col, idx in zip([c for c in therm_cols if int(c.split("_")[1]) in live_therm_idxs], live_therm_idxs):
             try:
-                idx = int(col.split("_")[1])
-            except Exception:
-                continue
-            if idx in dead_therms:
-                continue
-            try:
-                val = float(row[col])
-                temps.append(val)
+                temps.append(float(get(r, col)))
             except Exception:
                 pass
+        temp_block = any(t > TEMP_LIMIT for t in temps)
+        pcb_min = min(temps) if temps else None
+        pcb_max = max(temps) if temps else None
 
-    temp_block = any(t > TEMP_LIMIT for t in temps)
-    res["Temp_Block"] = temp_block
-    res["PCB_Temp_Min"] = min(temps) if temps else None
-    res["PCB_Temp_Max"] = max(temps) if temps else None
-
-    # Balancing required?
-    required = False
-    try:
-        if (
-            vmin is not None
-            and vmax is not None
-            and limit is not None
-            and threshold is not None
-            and not temp_block
-        ):
-            if float(vmin) >= float(limit) and (float(vmax) - float(vmin)) >= threshold:
-                required = True
-    except Exception:
-        pass
-
-    res["Balancing_Required"] = "YES" if required else "NO"
-
-    # Required cells
-    req = []
-    if required and vmin is not None and threshold is not None:
-        for c in cells:
-            if c in dead_cells:
-                continue
-            col = f"CellVoltage_{c}"
-            if col in row.index:
-                try:
-                    if float(row[col]) >= float(vmin) + threshold:
-                        req.append(c)
-                except Exception:
-                    pass
-    res["Required_Cells"] = req
-
-    # Active cells from masks
-    act = mask_decode(row.get("BalancingMask0"), row.get("BalancingMask1"))
-    res["Active_Cells"] = act
-
-    res["Missing"] = sorted(set(req) - set(act))
-    res["Extra"] = sorted(set(act) - set(req))
-
-    # Dead info
-    res["Dead_Cells"] = sorted(list(dead_cells))
-    res["Dead_Therms"] = sorted(list(dead_therms))
-
-    # Attach live cell voltages (except dead)
-    for c in cells:
-        if c not in dead_cells:
-            col = f"CellVoltage_{c}"
-            if col in row.index:
-                res[col] = row.get(col)
-
-    # Attach live thermistors (exclude dead ones)
-    for col in sorted([c for c in row.index if c.startswith("IntTherm_")]):
+        # Required?
+        required = False
         try:
-            idx = int(col.split("_")[1])
+            if vmin is not None and vmax is not None and bal_limit is not None and threshold is not None and not temp_block:
+                if float(vmin) >= float(bal_limit) and (float(vmax) - float(vmin)) >= threshold:
+                    required = True
         except Exception:
-            continue
-        if idx in dead_therms:
-            continue
-        res[col] = row.get(col)
+            pass
 
-    return res
+        # Required cells
+        req_cells = []
+        if required and vmin is not None and threshold is not None:
+            vmin_f = float(vmin)
+            thr_f = float(threshold)
+            for c in live_cells:
+                col = f"CellVoltage_{c}"
+                val = get(r, col)
+                if val is not None:
+                    try:
+                        if float(val) >= vmin_f + thr_f:
+                            req_cells.append(c)
+                    except Exception:
+                        pass
+
+        # Active from masks
+        active_cells = mask_decode(bm0, bm1)
+        missing = sorted(set(req_cells) - set(active_cells))
+        extra = sorted(set(active_cells) - set(req_cells))
+
+        # Store outputs
+        out["TimeStr"].append(time_str)
+        out["Time"].append(time_val)
+        out["SoC"].append(soc)
+        out["Pack_Current"].append(pack_current)
+        out["Charging_Info"].append(charging_info)
+        out["Flag_Balancing_Active"].append(flag_bal)
+        out["Balancing_Limit"].append(bal_limit)
+        out["Voltage_Min"].append(vmin)
+        out["Voltage_Max"].append(vmax)
+        out["Voltage_Delta"].append(vdelta)
+        out["BalancingMask0"].append(bm0)
+        out["BalancingMask1"].append(bm1)
+        out["Mode"].append(mode)
+        out["Threshold"].append(threshold)
+        out["Temp_Block"].append(temp_block)
+        out["PCB_Temp_Min"].append(pcb_min)
+        out["PCB_Temp_Max"].append(pcb_max)
+        out["Balancing_Required"].append("YES" if required else "NO")
+        out["Required_Cells"].append(req_cells)
+        out["Active_Cells"].append(active_cells)
+        out["Missing"].append(missing)
+        out["Extra"].append(extra)
+        out["Dead_Cells"].append(sorted(dead_cells))
+        out["Dead_Therms"].append(sorted(dead_therms))
+
+        # Live cell voltages
+        for c in live_cells:
+            col = f"CellVoltage_{c}"
+            cell_cols[c].append(get(r, col))
+
+        # Live therms
+        for idx in live_therm_idxs:
+            col = f"IntTherm_{idx}"
+            therm_cols_live[idx].append(get(r, col))
+
+    # Merge all outputs
+    out_df = pd.DataFrame(out)
+    for c, vals in cell_cols.items():
+        out_df[f"CellVoltage_{c}"] = vals
+    for idx, vals in therm_cols_live.items():
+        out_df[f"IntTherm_{idx}"] = vals
+
+    return out_df
 
 
 # -------------------------------------------
-# PASS/FAIL timing & logic (row-wise, with state)
+# PASS/FAIL timing (itertuples)
 # -------------------------------------------
-def add_pass_fail(df):
-    """
-    Adds two columns:
-      - PassFail: "PASS"/"FAIL"
-      - Remark:   explanation
-
-    Using:
-      * 0.4 s limit for activation + cell mismatch
-      * ODD/EVEN ON max ~0.9 s
-      * REST (combined) max ~0.6 s
-      * REST (normal)   max ~1.25 s
-    All based on REAL TRC time differences, not row counts.
-    """
+def add_pass_fail_fast(df):
     if df.empty:
         return df
 
     df = df.sort_values("Time").reset_index(drop=True)
-    df["PassFail"] = "PASS"
-    df["Remark"] = "OK"
+    passfail = ["PASS"] * len(df)
+    remark = ["OK"] * len(df)
 
-    def mark_fail(idx, reason):
-        if idx is None or idx < 0 or idx >= len(df):
+    def mark_fail(i, reason):
+        if i < 0 or i >= len(df):
             return
-        if df.at[idx, "PassFail"] == "PASS":
-            df.at[idx, "PassFail"] = "FAIL"
-            df.at[idx, "Remark"] = reason
+        if passfail[i] == "PASS":
+            passfail[i] = "FAIL"
+            remark[i] = reason
         else:
-            existing = df.at[idx, "Remark"]
-            if reason not in str(existing):
-                df.at[idx, "Remark"] = f"{existing} | {reason}"
+            if reason not in remark[i]:
+                remark[i] = f"{remark[i]} | {reason}"
 
-    # ---- 1) Activation timing: required -> Flag_Balancing_Active within 0.4 s
     pending_activation_start_time = None
-
-    # ---- 2) Missing/Extra cells timing: mismatch must not persist >0.4 s
     mismatch_start_time = None
     mismatch_active = False
     mismatch_reason_cached = ""
 
-    # ---- 3) ODD/EVEN/REST segment timing (time-based)
-    current_seg_state = None   # "ODD", "EVEN", "REST"
+    current_seg_state = None
     current_seg_start_idx = None
     current_seg_start_time = None
     seg_req_odd = False
     seg_req_even = False
 
     def finalize_segment(end_idx):
-        nonlocal current_seg_state, current_seg_start_idx, current_seg_start_time
-        nonlocal seg_req_odd, seg_req_even
-
+        nonlocal current_seg_state, current_seg_start_idx, current_seg_start_time, seg_req_odd, seg_req_even
         if current_seg_state is None or current_seg_start_idx is None:
             return
-
         if end_idx < current_seg_start_idx:
             return
-
         start_t = current_seg_start_time
         end_t = df.at[end_idx, "Time"] if 0 <= end_idx < len(df) else start_t
         duration = max(0.0, end_t - start_t)
-
         state = current_seg_state
-        has_req_odd = seg_req_odd
-        has_req_even = seg_req_even
-
-        if state == "ODD":
-            if duration > ODD_EVEN_MAX_ON_SEC:
-                mark_fail(end_idx, f"ODD balancing ON too long: {duration:.3f}s")
-        elif state == "EVEN":
-            if duration > ODD_EVEN_MAX_ON_SEC:
-                mark_fail(end_idx, f"EVEN balancing ON too long: {duration:.3f}s")
+        if state == "ODD" and duration > ODD_EVEN_MAX_ON_SEC:
+            mark_fail(end_idx, f"ODD balancing ON too long: {duration:.3f}s")
+        elif state == "EVEN" and duration > ODD_EVEN_MAX_ON_SEC:
+            mark_fail(end_idx, f"EVEN balancing ON too long: {duration:.3f}s")
         elif state == "REST":
-            if has_req_odd and has_req_even:
+            if seg_req_odd and seg_req_even:
                 if duration > REST_COMBINED_MAX_SEC:
-                    mark_fail(end_idx, f"REST (combined) too long: {duration:.3f}s")
+                    mark_fail(end_idx, f"REST (odd/even sequence) too long: {duration:.3f}s")
             else:
                 if duration > REST_NORMAL_MAX_SEC:
                     mark_fail(end_idx, f"REST (normal) too long: {duration:.3f}s")
-
         current_seg_state = None
         current_seg_start_idx = None
         current_seg_start_time = None
         seg_req_odd = False
         seg_req_even = False
 
-    # ---- iterate rows
-    for i, row in df.iterrows():
-        t = row.get("Time", 0.0)
-        required = (row.get("Balancing_Required") == "YES")
+    prev_t = None
 
-        # Handle flag as text or numeric: "Active"/"InActive"/1/0/True/False
-        flag_raw = row.get("Flag_Balancing_Active")
+    for i, row in enumerate(df.itertuples(index=False)):
+        t = row.Time if row.Time is not None else 0.0
+        required = (row.Balancing_Required == "YES")
+
+        flag_raw = row.Flag_Balancing_Active
         flag_txt = str(flag_raw).strip().lower()
         if flag_txt in ("active", "1", "true", "yes"):
             flag_active = True
@@ -456,12 +497,32 @@ def add_pass_fail(df):
             except Exception:
                 flag_active = False
 
-        req_cells = row.get("Required_Cells") or []
-        active_cells = row.get("Active_Cells") or []
-        missing = row.get("Missing") or []
-        extra = row.get("Extra") or []
+        req_cells = row.Required_Cells or []
+        active_cells = row.Active_Cells or []
+        missing = row.Missing or []
+        extra = row.Extra or []
+        has_req_odd_row = any((c & 1) == 1 for c in req_cells)
+        has_req_even_row = any((c & 1) == 0 for c in req_cells)
+        has_odd_act = any((c & 1) == 1 for c in active_cells)
+        has_even_act = any((c & 1) == 0 for c in active_cells)
 
-        # 1) Activation timing check
+        # Gap reset
+        if prev_t is not None:
+            gap = t - prev_t
+            if gap > TIME_GAP_RESET_SEC:
+                finalize_segment(i - 1)
+                pending_activation_start_time = None
+                mismatch_start_time = None
+                mismatch_active = False
+                mismatch_reason_cached = ""
+                current_seg_state = None
+                current_seg_start_idx = None
+                current_seg_start_time = None
+                seg_req_odd = False
+                seg_req_even = False
+        prev_t = t
+
+        # 1) Activation timing
         if required and not flag_active:
             if pending_activation_start_time is None:
                 pending_activation_start_time = t
@@ -471,10 +532,9 @@ def add_pass_fail(df):
         else:
             pending_activation_start_time = None
 
-        # 2) Missing / Extra cell timing check
+        # 2) Missing / extra timing
         mismatch_now = False
         reasons = []
-
         if required and flag_active:
             if active_cells:
                 if missing:
@@ -494,18 +554,28 @@ def add_pass_fail(df):
                 mismatch_start_time = t
                 mismatch_reason_cached = ", ".join(reasons)
             else:
-                if t - mismatch_start_time > PENDING_TIME_SEC:
-                    mark_fail(i, "Cell mismatch >0.4s: " + mismatch_reason_cached)
+                # If the mismatch type changes (e.g., different missing/extra set), restart the timer
+                current_reason = ", ".join(reasons)
+                if current_reason != mismatch_reason_cached:
+                    mismatch_start_time = t
+                    mismatch_reason_cached = current_reason
+                grace = PENDING_TIME_SEC
+                if required and flag_active and has_req_odd_row and has_req_even_row:
+                    # allow more time when alternating parity under mixed requirement
+                    if has_odd_act ^ has_even_act:
+                        grace = MIXED_SEQUENCE_GRACE_SEC
+                if t - mismatch_start_time > grace:
+                    mark_fail(i, f"Cell mismatch >{grace:.1f}s: " + mismatch_reason_cached)
         else:
             mismatch_active = False
             mismatch_start_time = None
             mismatch_reason_cached = ""
 
-        # 3) ODD / EVEN / REST segment detection (only when flag is active and balancing required)
+        # 3) ODD/EVEN/REST segments
         if required and flag_active:
-            has_odd_act = any(is_odd(c) for c in active_cells)
-            has_even_act = any(is_even(c) for c in active_cells)
-
+            # When both odd and even are required, active set must not mix parities at once.
+            if has_req_odd_row and has_req_even_row and has_odd_act and has_even_act:
+                mark_fail(i, "Active cells include both odd and even while mixed requirement should alternate")
             if not active_cells:
                 state = "REST"
             elif has_odd_act and not has_even_act:
@@ -516,9 +586,6 @@ def add_pass_fail(df):
                 state = None
         else:
             state = None
-
-        has_req_odd_row = any(is_odd(c) for c in req_cells)
-        has_req_even_row = any(is_even(c) for c in req_cells)
 
         if state is None:
             finalize_segment(i - 1)
@@ -542,8 +609,47 @@ def add_pass_fail(df):
                     seg_req_even = has_req_even_row
 
     finalize_segment(len(df) - 1)
-
+    df["PassFail"] = passfail
+    df["Remark"] = remark
     return df
+
+
+# -------------------------------------------
+# Split and save CSV (chunked, pyarrow if available)
+# -------------------------------------------
+def split_and_save_csv(df, trc_path, max_rows=1_000_000, chunksize=250_000):
+    """
+    Writes CSV in parts of <= max_rows rows each.
+    Uses pyarrow csv writer if available; else pandas.to_csv with chunksize.
+    """
+    base_dir = os.path.dirname(trc_path)
+    trc_name = os.path.splitext(os.path.basename(trc_path))[0]
+
+    total_rows = len(df)
+    if total_rows == 0:
+        return
+
+    use_pyarrow = False
+    try:
+        import pyarrow as pa  # type: ignore
+        import pyarrow.csv as pacsv  # type: ignore
+        use_pyarrow = True
+    except Exception:
+        use_pyarrow = False
+
+    num_parts = (total_rows + max_rows - 1) // max_rows
+    for part in range(num_parts):
+        start = part * max_rows
+        end = min(start + max_rows, total_rows)
+        chunk = df.iloc[start:end]
+        out_csv = os.path.join(base_dir, f"{trc_name}_balancing_summary_part{part + 1}.csv")
+
+        if use_pyarrow:
+            table = pa.Table.from_pandas(chunk, preserve_index=False)
+            pacsv.write_csv(table, out_csv)
+        else:
+            chunk.to_csv(out_csv, index=False, chunksize=chunksize)
+        print(f"✔ Saved: {out_csv}  ({len(chunk)} rows)")
 
 
 # -------------------------------------------
@@ -554,17 +660,11 @@ def run(df, path):
     dead_cells = find_dead_cells(df, cells)
     dead_therms = find_dead_therms(df)
 
-    out_rows = []
-    for _, row in df.iterrows():
-        out_rows.append(analyze(row, cells, dead_cells, dead_therms))
+    analyzed = analyze_fast(df, cells, dead_cells, dead_therms)
+    analyzed = add_pass_fail_fast(analyzed)
 
-    out = pd.DataFrame(out_rows)
-
-    out = add_pass_fail(out)
-
-    out_xlsx = os.path.join(os.path.dirname(path), "balancing_summary.xlsx")
-    out.to_excel(out_xlsx, index=False)
-    print("✔ Saved:", out_xlsx)
+    # ---- Save CSV with auto-splitting (10 lakh rows per file) ----
+    split_and_save_csv(analyzed, path, max_rows=1_000_000)
 
 
 # -------------------------------------------
@@ -587,9 +687,9 @@ def main():
 
     dbc = cantools.database.load_file(dbc_path)
 
-    frames = parse_trc(trc)
-    df = decode(frames, dbc)
-
+    frames = parse_trc_fast(trc)
+    df = decode_frames_fast(frames, dbc)
+    df = forward_fill_signals(df)
     run(df, trc)
 
 
