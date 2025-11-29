@@ -116,7 +116,8 @@ def parse_trc_file(filepath: str):
         actual_dt = start_dt + timedelta(microseconds=delta_us)
         frames.append((actual_dt, ftype, canid, dlc, data))
 
-    return start_sec, start_str, frames
+    # Include parsed datetime so caller can order files reliably
+    return start_sec, start_str, start_dt, frames
 
 
 # ------------ MERGE MULTIPLE TRC FILES ------------
@@ -125,8 +126,8 @@ def merge_trcs(filepaths):
 
     for fp in filepaths:
         try:
-            start_sec, start_str, frames = parse_trc_file(fp)
-            all_files.append((start_sec, start_str, frames))
+            start_sec, start_str, start_dt, frames = parse_trc_file(fp)
+            all_files.append((start_sec, start_str, start_dt, frames))
             print(f"Loaded: {fp}")
         except Exception as e:
             print(f"Skipping {fp}: {e}")
@@ -134,24 +135,30 @@ def merge_trcs(filepaths):
     if not all_files:
         raise RuntimeError("No valid TRC files selected.")
 
+    # Sort by actual parsed start datetime so header matches earliest file
+    all_files.sort(key=lambda x: x[2])
+
     # Remove duplicate TRC files based on STARTTIME seconds
     seen = set()
     unique = []
-    for st, st_str, fr in all_files:
-        if st not in seen:
-            unique.append((st, st_str, fr))
-            seen.add(st)
+    for st, st_str, st_dt, fr in all_files:
+        dedup_key = st if st is not None else st_dt
+        if dedup_key not in seen:
+            unique.append((st, st_str, st_dt, fr))
+            seen.add(dedup_key)
 
     # Flatten all frames with timestamps
     merged_all = []
-    for st, st_str, frames in unique:
+    for st, st_str, _st_dt, frames in unique:
         merged_all.extend(frames)
 
     # Sort all frames by actual datetime
     merged_all.sort(key=lambda x: x[0])
 
     # Header of final output = first TRC file's header info
-    base_start_sec  = unique[0][0]
+    base_start_sec = (
+        unique[0][0] if unique[0][0] is not None else unique[0][2].timestamp()
+    )
     base_start_str  = unique[0][1]
 
     # ------------ BUILD FINAL OUTPUT ------------
