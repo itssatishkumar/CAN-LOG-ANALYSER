@@ -49,7 +49,7 @@ print(f"Using TRC file from GUI: {trc_path}")
 # -----------------------------------------------------
 pattern = re.compile(
     r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4})\s+"
-    r"(\d{2}:\d{2}:\d{2})\.(\d+)\.\d+\s+\w+\s+"
+    r"(\d{2}:\d{2}:\d{2})\.(\d{3,4})(?:\.\d+)?\s+\w+\s+"
     r"([0-9A-Fa-f]+)\s+(\d+)\s+(.*)"
 )
 
@@ -69,6 +69,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         date_str = m.group(1)
         time_str = m.group(2)
         ms_str   = m.group(3)
+        ms_norm = ms_str if len(ms_str) == 4 else ms_str + "0" if len(ms_str) == 3 else ms_str
         can_id   = int(m.group(4), 16)
         dlc      = int(m.group(5))
         data_str = m.group(6).strip()
@@ -86,7 +87,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
 
         bms_state = data[BMS_STATE_BYTE_INDEX]
 
-        ts_str = f"{date_str} {time_str}.{ms_str}"
+        ts_str = f"{date_str} {time_str}.{ms_norm}"
         dt = datetime.strptime(ts_str, "%d-%m-%Y %H:%M:%S.%f")
         ts_ms = dt.timestamp() * 1000.0
 

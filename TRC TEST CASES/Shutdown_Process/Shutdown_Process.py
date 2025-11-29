@@ -455,6 +455,16 @@ def save_json(cycles, filepath):
 
 def save_plot_png(cycles):
     """Render the cycle summary as a colored table and save to PNG next to the script."""
+
+    def _fmt(val, decimals=2):
+        if val is None:
+            return "--"
+        if isinstance(val, (int, float)):
+            s = f"{val:.{decimals}f}"
+            s = s.rstrip("0").rstrip(".") if "." in s else s
+            return s
+        return str(val)
+
     headers = [
         "Shutdown\ncycle", "Shut_ts", "StartSoC", "ReflectSoC",
         "Delta", "SoC", "MCU", "ACK Time", "ACK_State",
@@ -472,9 +482,9 @@ def save_plot_png(cycles):
             row = [
                 str(idx),
                 _ts_multiline(c.get("Shutdown_ts_raw") or "--"),
-                c.get("Start_SoC"),
-                c.get("Reflect_SoC"),
-                c.get("Delta"),
+                _fmt(c.get("Start_SoC")),
+                _fmt(c.get("Reflect_SoC")),
+                _fmt(c.get("Delta"), decimals=3),
                 c.get("SoC_Result"),
                 c.get("MCU"),
                 c.get("ACK_Time"),

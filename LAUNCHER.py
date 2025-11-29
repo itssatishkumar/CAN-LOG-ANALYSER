@@ -54,7 +54,6 @@ SCRIPT_BY_ROW: Dict[int, str] = {
     17: "DRIVE_CHARGE_Max_Min_Avg_CURRENT.py",
 }
 
-
 def _default_output_names(script_name: str) -> Dict[str, str]:
     base = os.path.splitext(script_name)[0]
     return {
@@ -63,11 +62,9 @@ def _default_output_names(script_name: str) -> Dict[str, str]:
         "graph": f"{base}_plot.png",
     }
 
-
 # Allow scripts ~4.5 seconds (9 * 0.5s) to persist their JSON outputs
 RESULT_POLL_ATTEMPTS = 9
 RESULT_POLL_DELAY_MS = 500
-
 
 # -------------------------------------------------------
 # JSON POPUP
@@ -99,7 +96,6 @@ class JsonDialog(QDialog):
         btn.clicked.connect(self.accept)
         layout.addWidget(btn, alignment=Qt.AlignCenter)
 
-
 # -------------------------------------------------------
 # IMAGE POPUP
 # -------------------------------------------------------
@@ -129,7 +125,6 @@ class ImageDialog(QDialog):
         btn = QPushButton("Close")
         btn.clicked.connect(self.accept)
         layout.addWidget(btn, alignment=Qt.AlignCenter)
-
 
 # -------------------------------------------------------
 # FW CHECK THREAD
@@ -161,7 +156,6 @@ class FWCheckerThread(QThread):
 
         except Exception as e:
             self.finished_err.emit(str(e))
-
 
 # -------------------------------------------------------
 # MAIN GUI
@@ -981,7 +975,6 @@ class CANLogDebugger(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Error", str(e))
 
-
 # -------------------------------------------------------
 # MAIN
 # -------------------------------------------------------
@@ -997,14 +990,12 @@ def run_updater_first(app: QApplication):
 
     check_for_update(local_version=local_version, app=app)
 
-
 def main():
     app = QApplication(sys.argv)
     run_updater_first(app)
     w = CANLogDebugger()
     w.show()
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()

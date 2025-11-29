@@ -18,7 +18,7 @@ def _parse_start_datetime(text: str) -> datetime:
     Parse the Start time string from TRC header, allowing minor formatting issues
     like missing dot before milliseconds (e.g., '14:27:3041' -> '14:27:30.41').
     """
-    cleaned = text.strip().replace(".0", "")  # common suffix
+    cleaned = text.strip().replace(".0", "")  # common suffix like '...502.0' -> '...502'
 
     # Try standard format first
     try:
@@ -29,10 +29,8 @@ def _parse_start_datetime(text: str) -> datetime:
     # If seconds are stuck to milliseconds (e.g., 14:27:3041)
     try:
         date_part, time_part = cleaned.split()
-        # time_part expected like HH:MM:SSms with no dot; insert dot before last 2 or 3 digits
         if ":" in time_part:
             hh, mm, sec = time_part.split(":")
-            # if sec has 4 digits (e.g., 3041 -> 30.41), insert dot before last 2
             if len(sec) > 2 and not sec.count("."):
                 if len(sec) == 4:
                     sec = sec[:-2] + "." + sec[-2:]
@@ -50,6 +48,19 @@ def _parse_start_datetime(text: str) -> datetime:
         return datetime.strptime(cleaned, "%d-%m-%Y %H:%M:%S")
     except ValueError as e:
         raise ValueError(f"Unparseable start time '{text}': {e}")
+
+
+def _format_timestamp(ts: datetime) -> str:
+    """
+    Format timestamp similar to PCAN style with millisecond + 0.1 ms precision.
+    Example: '11-11-2025 05:03:30.5026'
+    """
+    base = ts.strftime("%d-%m-%Y %H:%M:%S")
+    total_us = ts.microsecond                # 0..999_999
+    ms = total_us // 1000                    # full milliseconds (0..999)
+    tenth_ms = (total_us % 1000) // 100      # tenth of a millisecond (0..9)
+    return f"{base}.{ms:03d}{tenth_ms}"
+
 
 # ------------ PARSE A SINGLE TRC FILE ------------
 def parse_trc_file(filepath: str):
@@ -80,7 +91,7 @@ def parse_trc_file(filepath: str):
         m = RE_FRAME.match(ln)
         if m:
             msgnum  = int(m.group(1))
-            offset  = float(m.group(2))
+            offset  = float(m.group(2))   # "Time Offset (ms)" from header
             ftype   = m.group(3)
             canid   = m.group(4)
             dlc     = m.group(5)
@@ -93,17 +104,20 @@ def parse_trc_file(filepath: str):
     # Convert absolute Start Time string → datetime (lenient parsing)
     start_dt = _parse_start_datetime(start_str)
 
-    # ---------- APPLY YOUR RULE ----------
+    # ---------- APPLY RULE ----------
     # FIRST FRAME = Start time (no offset added)
     offset_base = frames_raw[0][0]
 
     frames = []
     for offset, ftype, canid, dlc, data in frames_raw:
-        delta_ms = offset - offset_base  # use relative offset only
-        actual_dt = start_dt + timedelta(milliseconds=delta_ms)
+        # Offsets are in ms (with 0.1 ms resolution). Convert to microseconds.
+        delta_ms = offset - offset_base               # relative to first frame
+        delta_us = int(round(delta_ms * 1000.0))      # ms → µs
+        actual_dt = start_dt + timedelta(microseconds=delta_us)
         frames.append((actual_dt, ftype, canid, dlc, data))
 
     return start_sec, start_str, frames
+
 
 # ------------ MERGE MULTIPLE TRC FILES ------------
 def merge_trcs(filepaths):
@@ -120,7 +134,7 @@ def merge_trcs(filepaths):
     if not all_files:
         raise RuntimeError("No valid TRC files selected.")
 
-    # Remove duplicates TRC files based on STARTTIME seconds
+    # Remove duplicate TRC files based on STARTTIME seconds
     seen = set()
     unique = []
     for st, st_str, fr in all_files:
@@ -157,14 +171,13 @@ def merge_trcs(filepaths):
 
     msgnum = 1
     for ts, ftype, canid, dlc, data in merged_all:
-
-        ts_str = ts.strftime("%d-%m-%Y %H:%M:%S.%f")[:-3] + ".0"
-
+        ts_str = _format_timestamp(ts)
         line = f"{msgnum:>6})  {ts_str}  {ftype:<7} {canid:>4}  {dlc}  {data}"
         out.append(line)
         msgnum += 1
 
     return "\n".join(out)
+
 
 # ------------ GUI FILE PICKER ------------
 def main():
@@ -190,6 +203,7 @@ def main():
     print("   ✅ MERGE COMPLETE")
     print(f"   Output file saved as: {outpath}")
     print("=======================================================\n")
+
 
 if __name__ == "__main__":
     main()

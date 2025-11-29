@@ -40,7 +40,7 @@ THRESHOLD_A      = 0.2   # PASS if |max_current| <= 0.2A
 pattern = re.compile(
     r"\s*\d+\)\s+"
     r"(\d{2}-\d{2}-\d{4})\s+"
-    r"(\d{2}:\d{2}:\d{2})\.(\d+)\.\d+\s+"
+    r"(\d{2}:\d{2}:\d{2})\.(\d{3,4})(?:\.\d+)?\s+"
     r"(?:Rx|Tx)\s+"
     r"([0-9A-Fa-f]{3,8})\s+"
     r"(\d+)\s+"
@@ -65,6 +65,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         date_str = m.group(1)
         time_str = m.group(2)
         ms_str   = m.group(3)
+        ms_norm = ms_str if len(ms_str) == 4 else ms_str + "0" if len(ms_str) == 3 else ms_str
         can_id   = int(m.group(4), 16)
         dlc      = int(m.group(5))
         data_str = m.group(6).strip()
@@ -76,7 +77,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         data = [int(b, 16) for b in bytes_hex[:dlc]]
 
         # timestamp
-        timestamp = f"{date_str} {time_str}.{ms_str}"
+        timestamp = f"{date_str} {time_str}.{ms_norm}"
         dt = datetime.strptime(timestamp, "%d-%m-%Y %H:%M:%S.%f")
 
         # ---------------------------------------------------------

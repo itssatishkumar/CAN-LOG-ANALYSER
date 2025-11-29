@@ -215,7 +215,6 @@ BO_ 375 CellVoltage_Group_30: 8 Vector__XXX
  SG_ CellVoltage_118 : 16|16@1+ (0.1,0) [0|0] "mV" Vector__XXX
  SG_ CellVoltage_117 : 0|16@1+ (0.1,0) [0|0] "mV" Vector__XXX
 
-
 BO_ 301 IntTherm_Group_1: 8 Vector__XXX
  SG_ IntTherm_8 : 56|8@1+ (1,0) [0|0] "degC" Vector__XXX
  SG_ IntTherm_7 : 48|8@1+ (1,0) [0|0] "degC" Vector__XXX
@@ -243,22 +242,15 @@ BO_ 334 NTC_Delta: 6 Vector__XXX
 
 
 BO_ 265 AA_Batt_Param_2: 8 Vector__XXX
- SG_ Pack_Voltage : 48|16@1+ (0.1,0) [0|0] "V" Vector__XXX
- SG_ Flag_Fully_Charged : 40|8@1+ (1,0) [0|0] "" Vector__XXX
  SG_ BMS_State : 32|8@1+ (1,0) [0|0] "" Vector__XXX
- SG_ SoH : 16|16@1+ (0.01,0) [0|0] "%" Vector__XXX
  SG_ SoC : 0|16@1+ (0.01,0) [0|0] "%" Vector__XXX
-
-VAL_ 265 Flag_Fully_Charged  0 "False" 1 "True" ;
 VAL_ 265 BMS_State           0 "INIT" 1 "Ready" 2 "Precharge" 3 "Active" 4 "Error" ;
 
 BO_ 272 AC_Batt_Param_3: 8 Vector__XXX
  SG_ Pack_Current : 32|32@1- (1E-05,0) [0|0] "A" Vector__XXX
  SG_ Flag_Balancing_Active : 24|8@1+ (1,0) [0|0] "" Vector__XXX
- SG_ Flag_Precharge_Active : 16|8@1+ (1,0) [0|0] "" Vector__XXX
  SG_ Balancing_Limit : 0|16@1+ (0.1,0) [0|0] "mV" Vector__XXX
 VAL_ 272 Flag_Balancing_Active  0 "InActive" 1 "Active" ;
-VAL_ 272 Flag_Precharge_Active  0 "InActive" 1 "Active" ;
 
 BO_ 300 DG_voltageData: 8 Vector__XXX
  SG_ Contactor_Command : 48|8@1+ (1,0) [0|0] "" Vector__XXX

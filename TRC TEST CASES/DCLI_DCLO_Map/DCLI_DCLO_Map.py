@@ -36,13 +36,20 @@ def parse_trc_for_110(filepath):
     def parse_timestamp(ts_raw: str):
         ts_clean = ts_raw.strip().replace(".0", "")
         ts_clean = re.sub(
-            r"(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}):(\d+)$",
+            r"(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}):(\d{3,4})$",
             r"\1.\2",
             ts_clean,
         )
 
         if not re.search(r"\.\d+$", ts_clean):
             ts_clean = f"{ts_clean}.000"
+
+        if re.search(r"\.(\d+)$", ts_clean):
+            base, ms = ts_clean.rsplit(".", 1)
+            if len(ms) == 3:
+                ts_clean = f"{base}.{ms}0"
+            elif len(ms) > 4:
+                ts_clean = f"{base}.{ms[:4]}"
 
         try:
             return datetime.strptime(ts_clean, "%d-%m-%Y %H:%M:%S.%f")
