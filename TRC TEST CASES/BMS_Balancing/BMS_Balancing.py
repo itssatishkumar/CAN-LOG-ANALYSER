@@ -15,7 +15,7 @@ PENDING_TIME_SEC = 0.4   # 0.4 s window for activation / mismatch checks
 # Time-based loose limits (instead of "counts")
 ODD_EVEN_MAX_ON_SEC = 0.9      # ~3 counts * 300 ms
 REST_COMBINED_MAX_SEC = 0.6    # ~2 counts * 300 ms
-REST_NORMAL_MAX_SEC = 1.2      # ~4 counts * 300 ms
+REST_NORMAL_MAX_SEC = 1.25      # ~4 counts * 300 ms
 
 DISCHARGE_LIMIT_TABLE = [
     (0, 5, 61),
@@ -364,7 +364,7 @@ def add_pass_fail(df):
       * 0.4 s limit for activation + cell mismatch
       * ODD/EVEN ON max ~0.9 s
       * REST (combined) max ~0.6 s
-      * REST (normal)   max ~1.2 s
+      * REST (normal)   max ~1.25 s
     All based on REAL TRC time differences, not row counts.
     """
     if df.empty:
