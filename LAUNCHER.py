@@ -26,7 +26,7 @@ TEST_CASES = [
     "ANY BMS ERROR", "FLAG FULL CHARGE DISABLE", "DCLI / DCLO MAP",
     "EQUIVALENT CYCLE COUNT", "BMS BALANCING",
     "PRIMARY VS SECONDARY LATCH", "MCU OBC ERROR", "AuxCharge_with_Vehicle_state_change",
-    "SoC vs VOLTAGE SUMMARY", "CAPACITY CHECK", "BMS CURRENT IN READY MODE", "DRIVE_CHARGE Max Min Avg CURRENT"
+    "SoC vs VOLTAGE SUMMARY", "CAPACITY + SoC vs RANGE CHECK", "BMS CURRENT IN READY MODE", "DRIVE_CHARGE Max Min Avg CURRENT"
 ]
 
 FW_CHECKER = "FW_Config_checker.py"
@@ -235,6 +235,7 @@ class CANLogDebugger(QWidget):
         (self.lb_stark_fw, self.tx_stark_fw) = fw_field("STARK FIRMWARE")
         (self.lb_stark_cfg, self.tx_stark_cfg) = fw_field("STARK CONFIG")
         (self.lb_xavier_fw, self.tx_xavier_fw) = fw_field("XAVIER FIRMWARE")
+        (self.lb_distance, self.tx_distance) = fw_field("DISTANCE COVERED")
 
         bms_labels = [
             self.lb_hw,
@@ -250,6 +251,7 @@ class CANLogDebugger(QWidget):
             style_label(lbl, "#2CBDF2")
 
         style_label(self.lb_xavier_fw, "#1FA37A")
+        style_label(self.lb_distance, "#1FA37A")
 
         grid = QGridLayout()
         grid.setSpacing(8)
@@ -264,6 +266,7 @@ class CANLogDebugger(QWidget):
             (self.lb_stark_fw, self.tx_stark_fw),
             (self.lb_stark_cfg, self.tx_stark_cfg),
             (self.lb_xavier_fw, self.tx_xavier_fw),
+            (self.lb_distance, self.tx_distance),
         ]
 
         for r, (l, t) in enumerate(fw_rows):
@@ -699,6 +702,18 @@ class CANLogDebugger(QWidget):
         self.tx_stark_cfg.setText(info.get("STARK_CONFIG", ""))
         self.tx_xavier_fw.setText(info.get("XAVIER_FIRMWARE", ""))
 
+        def _fmt_dist(val):
+            if val is None:
+                return ""
+            try:
+                return f"{float(val):.1f} km"
+            except Exception:
+                return f"{val} km" if val else ""
+
+        # Prefer new keyed distance; fallback if older key used
+        dist_val = info.get("DISTANCE_COVERED_KM", info.get("DISTANCE_COVERED", ""))
+        self.tx_distance.setText(_fmt_dist(dist_val))
+
     def on_fw_error(self, err):
         QMessageBox.warning(self, "FW Error", err)
 
@@ -964,6 +979,7 @@ class CANLogDebugger(QWidget):
                 writer.writerow(["STARK FIRMWARE", self.tx_stark_fw.text()])
                 writer.writerow(["STARK CONFIG", self.tx_stark_cfg.text()])
                 writer.writerow(["XAVIER FIRMWARE", self.tx_xavier_fw.text()])
+                writer.writerow(["Distance Covered", self.tx_distance.text()])
 
                 writer.writerow(["VCU Reset Count", self.tx_vcu_value.text()])
                 writer.writerow(["VCU Reset Result", self.tx_vcu_result.text()])
