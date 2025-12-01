@@ -20,13 +20,8 @@ def _parse_start_datetime(text: str) -> datetime:
     """
     cleaned = text.strip().replace(".0", "")  # common suffix like '...502.0' -> '...502'
 
-    # Try standard format first
-    try:
-        return datetime.strptime(cleaned, "%d-%m-%Y %H:%M:%S.%f")
-    except ValueError:
-        pass
-
-    # If seconds are stuck to milliseconds (e.g., 14:27:3041)
+    # Normalise variants where seconds are glued to milliseconds (e.g., 14:27:3041)
+    candidates = [cleaned]
     try:
         date_part, time_part = cleaned.split()
         if ":" in time_part:
@@ -38,16 +33,30 @@ def _parse_start_datetime(text: str) -> datetime:
                     sec = sec[:-2] + "." + sec[-2:]
                 elif len(sec) > 4:
                     sec = sec[:-3] + "." + sec[-3:]
-            cleaned2 = f"{date_part} {hh}:{mm}:{sec}"
-            return datetime.strptime(cleaned2, "%d-%m-%Y %H:%M:%S.%f")
+            candidates.append(f"{date_part} {hh}:{mm}:{sec}")
     except Exception:
         pass
 
-    # Final fallback: try without milliseconds
-    try:
-        return datetime.strptime(cleaned, "%d-%m-%Y %H:%M:%S")
-    except ValueError as e:
-        raise ValueError(f"Unparseable start time '{text}': {e}")
+    # Try multiple regional date formats (slash or dash) with/without milliseconds
+    date_formats = [
+        "%d-%m-%Y %H:%M:%S.%f",
+        "%d-%m-%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M:%S.%f",
+        "%d/%m/%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M:%S.%f",
+        "%m/%d/%Y %H:%M:%S",
+        "%m-%d-%Y %H:%M:%S.%f",
+        "%m-%d-%Y %H:%M:%S",
+    ]
+
+    for candidate in candidates:
+        for fmt in date_formats:
+            try:
+                return datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+
+    raise ValueError(f"Unparseable start time '{text}': tried formats {date_formats}")
 
 
 def _format_timestamp(ts: datetime) -> str:
