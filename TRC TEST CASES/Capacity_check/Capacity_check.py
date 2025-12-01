@@ -495,19 +495,41 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
             break
 
     # ---------------------------------------------------------
-    # Distance from SOC 0% (to UV if present, else to last ODO)
+    # Distance from SOC 0% (respecting 5-sample streak rule)
     # ---------------------------------------------------------
-    soc_zero_ts = None
+    uv_detected = uv_ts is not None
+    last_zero_streak_start = None
+    streak_len = 0
+    last_zero_ts = None
+
+    def consider_streak(start_ts, end_ts, length):
+        nonlocal last_zero_streak_start
+        if length < 5:
+            return
+        if uv_detected and end_ts and end_ts > uv_ts:
+            return
+        last_zero_streak_start = start_ts
+
     for ts, soc in soc_list:
         if soc <= 0.5:
-            soc_zero_ts = ts
-            break
+            if streak_len == 0:
+                streak_start_ts = ts
+            streak_len += 1
+            last_zero_ts = ts
+        else:
+            if streak_len >= 5:
+                consider_streak(streak_start_ts, last_zero_ts, streak_len)
+            streak_len = 0
+            last_zero_ts = None
 
-    dist_after_zero = 0.0
-    uv_detected = uv_ts is not None
+    if streak_len >= 5:
+        consider_streak(streak_start_ts, last_zero_ts, streak_len)
 
-    if soc_zero_ts and odo_list:
-        odo_at_zero = lookup_before(soc_zero_ts, odo_list)
+    zero_streak_found = last_zero_streak_start is not None
+    dist_after_zero = None
+
+    if zero_streak_found and odo_list:
+        odo_at_zero = lookup_before(last_zero_streak_start, odo_list)
         if odo_at_zero:
             if uv_detected:
                 odo_at_end = lookup_before(uv_ts, odo_list)
@@ -516,7 +538,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
             if odo_at_end:
                 dist_after_zero = max(0.0, odo_at_end[1] - odo_at_zero[1])
 
-    return final_rows, total_range, dist_after_zero, uv_detected
+    return final_rows, total_range, dist_after_zero, uv_detected, zero_streak_found
 
 
 # =========================================================
@@ -529,6 +551,7 @@ def draw_table_png(
     total_range=0.0,
     dist_after_zero=0.0,
     uv_detected=False,
+    zero_streak_found=False,
 ):
 
     cols = ["SoC Window", "Odo", "Cap Exchange", "Temp Avg"]
@@ -580,10 +603,14 @@ def draw_table_png(
     # ---------------------------------------------------------
     # Extra row for Distance after SoC 0%
     # ---------------------------------------------------------
-    if uv_detected:
+    if not zero_streak_found:
+        msg = "Distance Covered when SoC was 0.00% = N/A"
+    elif uv_detected and dist_after_zero is not None:
         msg = f"Distance Covered when SoC was 0.00% to UV = {dist_after_zero:.1f} km"
-    else:
+    elif dist_after_zero is not None:
         msg = f"Distance Covered when SoC was 0.00% = {dist_after_zero:.1f} km (UV Not detected)"
+    else:
+        msg = "Distance Covered when SoC was 0.00% = N/A"
 
     ax.add_patch(Rectangle((0, y), 1, row_h, fc="white", ec="black"))
     ax.text(
@@ -659,7 +686,7 @@ def main():
 
     soc_list, current_list, odo_list, ntc_list, uv_list = parse_trc(trc)
 
-    rows, total_range, dist_after_zero, uv_detected = build_windows(
+    rows, total_range, dist_after_zero, uv_detected, zero_streak_found = build_windows(
         soc_list, current_list, odo_list, ntc_list, uv_list, trc
     )
 
@@ -689,6 +716,7 @@ def main():
         total_range=total_range,
         dist_after_zero=dist_after_zero,
         uv_detected=uv_detected,
+        zero_streak_found=zero_streak_found,
     )
 
 
