@@ -341,7 +341,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
         uv_end_soc = get_uv_end_soc(soc_list, uv_ts)
 
     if not soc_list:
-        return [], 0.0, 0.0  ### >>> MODIFIED
+        return [], 0.0, 0.0, False
 
     ts_all = [t for t, _ in soc_list]
     t_start = ts_all[0]
@@ -495,33 +495,46 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
             break
 
     # ---------------------------------------------------------
-    # Distance from SOC 0% to UV
+    # Distance from SOC 0% (to UV if present, else to last ODO)
     # ---------------------------------------------------------
     soc_zero_ts = None
     for ts, soc in soc_list:
-        if soc <= 0.5:  ### >>> ADDED
+        if soc <= 0.5:
             soc_zero_ts = ts
             break
 
     dist_after_zero = 0.0
-    if soc_zero_ts and uv_ts:
-        odo_at_zero = lookup_before(soc_zero_ts, odo_list)
-        odo_at_uv = lookup_before(uv_ts, odo_list)
-        if odo_at_zero and odo_at_uv:
-            dist_after_zero = max(0.0, odo_at_uv[1] - odo_at_zero[1])
+    uv_detected = uv_ts is not None
 
-    return final_rows, total_range, dist_after_zero   ### >>> MODIFIED
+    if soc_zero_ts and odo_list:
+        odo_at_zero = lookup_before(soc_zero_ts, odo_list)
+        if odo_at_zero:
+            if uv_detected:
+                odo_at_end = lookup_before(uv_ts, odo_list)
+            else:
+                odo_at_end = odo_list[-1]
+            if odo_at_end:
+                dist_after_zero = max(0.0, odo_at_end[1] - odo_at_zero[1])
+
+    return final_rows, total_range, dist_after_zero, uv_detected
 
 
 # =========================================================
 #  DRAW TABLE PNG
 # =========================================================
-def draw_table_png(rows, output, total_cap_override=None, total_range=0.0, dist_after_zero=0.0):  ### >>> MODIFIED
+def draw_table_png(
+    rows,
+    output,
+    total_cap_override=None,
+    total_range=0.0,
+    dist_after_zero=0.0,
+    uv_detected=False,
+):
 
     cols = ["SoC Window", "Odo", "Cap Exchange", "Temp Avg"]
     col_w = [0.45, 0.15, 0.2, 0.2]
 
-    fig, ax = plt.subplots(figsize=(12, 0.6 + 0.4 * (len(rows) + 3)))  ### height +1
+    fig, ax = plt.subplots(figsize=(12, 0.6 + 0.4 * (len(rows) + 3)))
     ax.axis("off")
 
     header_h = 0.06
@@ -565,13 +578,23 @@ def draw_table_png(rows, output, total_cap_override=None, total_range=0.0, dist_
         y -= row_h
 
     # ---------------------------------------------------------
-    # Extra row for Distance from SOC 0% to UV
+    # Extra row for Distance after SoC 0%
     # ---------------------------------------------------------
+    if uv_detected:
+        msg = f"Distance Covered when SoC was 0.00% to UV = {dist_after_zero:.1f} km"
+    else:
+        msg = f"Distance Covered when SoC was 0.00% = {dist_after_zero:.1f} km (UV Not detected)"
+
     ax.add_patch(Rectangle((0, y), 1, row_h, fc="white", ec="black"))
     ax.text(
-        0.5, y + row_h/2,
-        f"Distance Covered when SoC was 0.00% to UV = {dist_after_zero:.1f} km",
-        ha="center", va="center", fontsize=12, fontweight="bold", color="red"
+        0.5,
+        y + row_h / 2,
+        msg,
+        ha="center",
+        va="center",
+        fontsize=12,
+        fontweight="bold",
+        color="red",
     )
     y -= row_h
 
@@ -581,14 +604,36 @@ def draw_table_png(rows, output, total_cap_override=None, total_range=0.0, dist_
     ax.add_patch(Rectangle((0, y), col_w[0], row_h, fc="white", ec="black"))
 
     ax.add_patch(Rectangle((col_w[0], y), col_w[1], row_h, fc="#a0d0ff", ec="black"))
-    ax.text(col_w[0] + col_w[1]/2, y + row_h/2, f"Range = {total_range:.1f} km", ha="center", va="center")
+    ax.text(
+        col_w[0] + col_w[1] / 2,
+        y + row_h / 2,
+        f"Range = {total_range:.1f} km",
+        ha="center",
+        va="center",
+    )
 
     display_cap = total_cap_override if total_cap_override else total_cap
 
-    ax.add_patch(Rectangle((col_w[0] + col_w[1], y), col_w[2], row_h, fc="#a0d0ff", ec="black"))
-    ax.text(col_w[0] + col_w[1] + col_w[2]/2, y + row_h/2, f"Total CAP exc = {display_cap:.2f} Ah", ha="center", va="center")
+    ax.add_patch(
+        Rectangle((col_w[0] + col_w[1], y), col_w[2], row_h, fc="#a0d0ff", ec="black")
+    )
+    ax.text(
+        col_w[0] + col_w[1] + col_w[2] / 2,
+        y + row_h / 2,
+        f"Total CAP exc = {display_cap:.2f} Ah",
+        ha="center",
+        va="center",
+    )
 
-    ax.add_patch(Rectangle((col_w[0] + col_w[1] + col_w[2], y), col_w[3], row_h, fc="#a0d0ff", ec="black"))
+    ax.add_patch(
+        Rectangle(
+            (col_w[0] + col_w[1] + col_w[2], y),
+            col_w[3],
+            row_h,
+            fc="#a0d0ff",
+            ec="black",
+        )
+    )
 
     plt.tight_layout()
     plt.savefig(output, dpi=150, bbox_inches="tight")
@@ -614,7 +659,7 @@ def main():
 
     soc_list, current_list, odo_list, ntc_list, uv_list = parse_trc(trc)
 
-    rows, total_range, dist_after_zero = build_windows(   ### >>> MODIFIED
+    rows, total_range, dist_after_zero, uv_detected = build_windows(
         soc_list, current_list, odo_list, ntc_list, uv_list, trc
     )
 
@@ -633,14 +678,17 @@ def main():
     }
 
     (out / "Capacity_check_summary.json").write_text(json.dumps(summary, indent=4))
-    (out / "Capacity_check_results.json").write_text(json.dumps({"Result": "PASS"}, indent=4))
+    (out / "Capacity_check_results.json").write_text(
+        json.dumps({"Result": "PASS"}, indent=4)
+    )
 
     draw_table_png(
         rows,
         out / "Capacity_check_plot.png",
         total_cap_override=stats["exchange_ah"],
         total_range=total_range,
-        dist_after_zero=dist_after_zero   ### >>> ADDED
+        dist_after_zero=dist_after_zero,
+        uv_detected=uv_detected,
     )
 
 
