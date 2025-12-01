@@ -40,7 +40,6 @@ RE_0258 = re.compile(
     r"(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+0258\s+8\s+(.+)"
 )
 
-# Charging state (monitor CAN ID 0x0602)
 RE_0602 = re.compile(
     r"\s*\d+\)\s+"
     r"(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+0602\s+\d+\s+(.+)"
@@ -123,10 +122,9 @@ def parse_trc(fp):
                         | (int(d[2], 16) << 16)
                         | (int(d[3], 16) << 24)
                     )
-                    # raw * 0.1 => km
                     odo_list.append((ts, raw * 0.1))
 
-            # UV FLAG (Intel 16-bit from first 2 bytes)
+            # UV FLAG
             m = RE_0258.match(line)
             if m:
                 ts = parse_ts(m.group(1))
@@ -143,10 +141,6 @@ def parse_trc(fp):
 #  DETECT CHARGING STATE FROM CAN ID 0x0602
 # =========================================================
 def detect_charge_events(fp):
-    """
-    State comes from the last byte of CAN ID 0x0602:
-    0x01 or 0x03 -> CHARGING, anything else -> DRIVING.
-    """
 
     events = []
     with open(fp, "r", encoding="utf-8", errors="ignore") as f:
@@ -171,9 +165,6 @@ def detect_charge_events(fp):
 
 
 def build_charge_sessions(events, default_end=None):
-    """
-    Compress state changes into charging sessions (start_ts, end_ts).
-    """
 
     sessions = []
     state = "DRIVING"
@@ -185,7 +176,7 @@ def build_charge_sessions(events, default_end=None):
 
         if new_state == "CHARGING":
             session_start = ts
-        else:  # new_state == "DRIVING"
+        else:
             if session_start:
                 sessions.append((session_start, ts))
                 session_start = None
@@ -198,7 +189,7 @@ def build_charge_sessions(events, default_end=None):
 
 
 # =========================================================
-#  LOOKUP BEFORE / AFTER TS
+#  LOOKUP HELPERS
 # =========================================================
 def lookup_before(ts, data):
     best = None
@@ -211,7 +202,6 @@ def lookup_before(ts, data):
 
 
 def lookup_after(ts, data):
-    """First entry with t >= ts."""
     for t, v in data:
         if t >= ts:
             return (t, v)
@@ -219,10 +209,6 @@ def lookup_after(ts, data):
 
 
 def find_soc_ts(soc_list, target, start_ts, end_ts, reverse=False, tol=0.15):
-    """
-    Locate timestamp for a given SOC value within a window.
-    """
-
     data = reversed(soc_list) if reverse else soc_list
     for ts, soc in data:
         if ts < start_ts or ts > end_ts:
@@ -252,12 +238,14 @@ def integrate_window(current_list, start_ts, end_ts):
         dt = (t1 - t0).total_seconds()
         if dt <= 0 or dt > 0.5:
             dt = DEFAULT_DT
+
         As += I * dt
 
     return As / 3600.0
 
 
 def summarize_current(current_list):
+
     DEFAULT_DT = 0.3
     pos_as = 0.0
     neg_as = 0.0
@@ -292,24 +280,13 @@ def summarize_current(current_list):
 
 
 # =========================================================
-#  UV SOC SELECTION WITH 0%-STREAK RULE
+#  UV SOC SELECTION
 # =========================================================
 def get_uv_end_soc(soc_list, uv_ts):
-    """
-    Decide SOC to use at UV moment.
-
-    - Prefer first SOC with t >= uv_ts.
-    - If none, fall back to last SOC with t <= uv_ts.
-    - If chosen SOC > 0 → use it.
-    - If chosen SOC == 0:
-        - If 0 appears in 5 consecutive samples ending at that index → accept 0.
-        - Else → use last non-zero SOC before the zero streak.
-    """
 
     if not soc_list:
         return None
 
-    # Find index of first SOC at or after UV
     idx = None
     for i, (t, v) in enumerate(soc_list):
         if t >= uv_ts:
@@ -317,7 +294,6 @@ def get_uv_end_soc(soc_list, uv_ts):
             break
 
     if idx is None:
-        # No SOC after UV, use last before
         idx = len(soc_list) - 1
 
     chosen_soc = soc_list[idx][1]
@@ -325,7 +301,6 @@ def get_uv_end_soc(soc_list, uv_ts):
     if chosen_soc > 0:
         return chosen_soc
 
-    # chosen_soc == 0 → check streak back from idx
     streak = 0
     j = idx
     while j >= 0 and soc_list[j][1] == 0:
@@ -333,22 +308,18 @@ def get_uv_end_soc(soc_list, uv_ts):
         j -= 1
 
     if streak >= 5:
-        # Valid 0%
         return 0.0
 
-    # Not a valid zero → return last non-zero SOC before the zero streak
     while j >= 0:
         if soc_list[j][1] > 0:
             return soc_list[j][1]
         j -= 1
 
-    # If everything before is zero and streak < 5, just return 0.0 as fallback
     return 0.0
 
 
 # =========================================================
-#  BUILD WINDOWS WITH CORRECT ODO BASELINE RESET
-#  + UV STOP INSIDE LAST WINDOW
+#  BUILD WINDOWS
 # =========================================================
 def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
 
@@ -359,26 +330,23 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
 
     temp_frames = [(ts, (b0 + b1) / 2.0) for ts, (b0, b1) in ntc_list]
 
-    # UV cutoff timestamp (first time UV becomes active)
     uv_ts = None
     for ts, flag in uv_list:
         if flag == 1:
             uv_ts = ts
             break
 
-    # Decide SOC at UV using 0%-streak rule
     uv_end_soc = None
     if uv_ts and soc_list:
         uv_end_soc = get_uv_end_soc(soc_list, uv_ts)
 
     if not soc_list:
-        return [], 0.0
+        return [], 0.0, 0.0  ### >>> MODIFIED
 
     ts_all = [t for t, _ in soc_list]
     t_start = ts_all[0]
     t_end = ts_all[-1]
 
-    # Charging sessions from 0x0602 frames
     charge_events = detect_charge_events(fp)
     charging_sessions = build_charge_sessions(charge_events, t_end)
 
@@ -405,11 +373,9 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
 
     for typ, block_start, block_end in session_blocks:
 
-        # Charging window: record SOC, reset baselines after exit
         if typ == "charge":
             charge_soc_start = lookup_before(block_start, soc_list)
             charge_soc_end = lookup_before(block_end, soc_list)
-            _charge_odo_start = lookup_before(block_start, odo_list)
             charge_odo_end = lookup_before(block_end, odo_list)
 
             if charge_soc_start and charge_soc_end:
@@ -421,15 +387,11 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
                 odo_baseline = charge_odo_end[1]
             if charge_soc_end:
                 soc_baseline = charge_soc_end[1]
-
-            # Explicitly ignore ODO changes while charging
             continue
 
-        # If UV already happened before this block starts, skip this block entirely
         if uv_ts and uv_ts <= block_start:
             continue
 
-        # Limit block end by UV time if UV is inside this block
         if uv_ts and uv_ts < block_end:
             block_end_ts = uv_ts
             uv_in_this_block = True
@@ -449,11 +411,9 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
         current_soc = soc_baseline
         end_soc = end_entry[1]
 
-        # If UV is in this block, override end_soc with UV-end-SOC rule
         if uv_in_this_block and uv_end_soc is not None:
             end_soc = uv_end_soc
 
-        # Subdivide into 10% SOC windows during driving
         while current_soc - end_soc >= 10:
             next_soc = current_soc - 10
 
@@ -485,16 +445,13 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
                 temp_start = temp_frames[0]
             if not temp_end and temp_frames:
                 temp_end = temp_frames[-1]
-            tavg = (
-                (temp_start[1] + temp_end[1]) / 2 if temp_start and temp_end else None
-            )
+            tavg = ((temp_start[1] + temp_end[1]) / 2) if temp_start and temp_end else None
 
             cap_ah = integrate_window(current_list, window_start_ts, window_end_ts)
 
             final_rows.append(("normal", current_soc, next_soc, dist, cap_ah, tavg))
             current_soc = next_soc
 
-        # Final partial window inside this driving block
         if current_soc > end_soc:
             window_start_ts = (
                 find_soc_ts(soc_list, current_soc, block_start, block_end_ts)
@@ -524,53 +481,57 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
                 temp_start = temp_frames[0]
             if not temp_end and temp_frames:
                 temp_end = temp_frames[-1]
-            tavg = (
-                (temp_start[1] + temp_end[1]) / 2 if temp_start and temp_end else None
-            )
+            tavg = ((temp_start[1] + temp_end[1]) / 2) if temp_start and temp_end else None
 
             cap_ah = integrate_window(current_list, window_start_ts, window_end_ts)
             final_rows.append(("normal", current_soc, end_soc, dist, cap_ah, tavg))
 
         soc_baseline = end_soc
 
-        # If UV happened inside this block, mark last row as UV and stop
         if uv_in_this_block:
             if final_rows:
                 last_typ, sv, ev, odo, cap, tavg = final_rows[-1]
                 final_rows[-1] = ("uv", sv, ev, odo, cap, tavg)
             break
 
-    return final_rows, total_range
+    # ---------------------------------------------------------
+    # Distance from SOC 0% to UV
+    # ---------------------------------------------------------
+    soc_zero_ts = None
+    for ts, soc in soc_list:
+        if soc <= 0.5:  ### >>> ADDED
+            soc_zero_ts = ts
+            break
+
+    dist_after_zero = 0.0
+    if soc_zero_ts and uv_ts:
+        odo_at_zero = lookup_before(soc_zero_ts, odo_list)
+        odo_at_uv = lookup_before(uv_ts, odo_list)
+        if odo_at_zero and odo_at_uv:
+            dist_after_zero = max(0.0, odo_at_uv[1] - odo_at_zero[1])
+
+    return final_rows, total_range, dist_after_zero   ### >>> MODIFIED
 
 
 # =========================================================
 #  DRAW TABLE PNG
 # =========================================================
-def draw_table_png(rows, output, total_cap_override=None, total_range=0.0):
+def draw_table_png(rows, output, total_cap_override=None, total_range=0.0, dist_after_zero=0.0):  ### >>> MODIFIED
 
     cols = ["SoC Window", "Odo", "Cap Exchange", "Temp Avg"]
     col_w = [0.45, 0.15, 0.2, 0.2]
 
-    fig, ax = plt.subplots(figsize=(12, 0.6 + 0.4 * (len(rows) + 2)))
+    fig, ax = plt.subplots(figsize=(12, 0.6 + 0.4 * (len(rows) + 3)))  ### height +1
     ax.axis("off")
 
     header_h = 0.06
     row_h = 0.06
 
-    # Header row
     y = 1 - header_h
     x = 0
     for i, h in enumerate(cols):
-        ax.add_patch(
-            Rectangle((x, y), col_w[i], header_h, fc="#d0d0d0", ec="black")
-        )
-        ax.text(
-            x + col_w[i] / 2,
-            y + header_h / 2,
-            h,
-            ha="center",
-            va="center",
-        )
+        ax.add_patch(Rectangle((x, y), col_w[i], header_h, fc="#d0d0d0", ec="black"))
+        ax.text(x + col_w[i]/2, y + header_h/2, h, ha="center", va="center")
         x += col_w[i]
     y -= row_h
 
@@ -580,10 +541,8 @@ def draw_table_png(rows, output, total_cap_override=None, total_range=0.0):
 
         if typ == "charge":
             msg = f"Charging session: {sv:.2f}% -> {ev:.2f}%"
-            ax.add_patch(
-                Rectangle((0, y), 1, row_h, fc="#fce88c", ec="black")
-            )
-            ax.text(0.5, y + row_h / 2, msg, ha="center", va="center")
+            ax.add_patch(Rectangle((0, y), 1, row_h, fc="#fce88c", ec="black"))
+            ax.text(0.5, y + row_h/2, msg, ha="center", va="center")
             y -= row_h
             continue
 
@@ -598,65 +557,38 @@ def draw_table_png(rows, output, total_cap_override=None, total_range=0.0):
 
         x = 0
         for val, w in zip([sw, cd, ce, tv], col_w):
-            ax.add_patch(
-                Rectangle((x, y), w, row_h, fc="white", ec="black")
-            )
-            ax.text(
-                x + w / 2,
-                y + row_h / 2,
-                val,
-                ha="center",
-                va="center",
-            )
+            ax.add_patch(Rectangle((x, y), w, row_h, fc="white", ec="black"))
+            ax.text(x + w/2, y + row_h/2, val, ha="center", va="center")
             x += w
 
         total_cap += cap
         y -= row_h
 
-    # Totals row
-    ax.add_patch(
-        Rectangle((0, y), col_w[0], row_h, fc="white", ec="black")
-    )
-
-    ax.add_patch(
-        Rectangle((col_w[0], y), col_w[1], row_h, fc="#a0d0ff", ec="black")
-    )
+    # ---------------------------------------------------------
+    # Extra row for Distance from SOC 0% to UV
+    # ---------------------------------------------------------
+    ax.add_patch(Rectangle((0, y), 1, row_h, fc="white", ec="black"))
     ax.text(
-        col_w[0] + col_w[1] / 2,
-        y + row_h / 2,
-        f"Range = {total_range:.1f} km",
-        ha="center",
-        va="center",
+        0.5, y + row_h/2,
+        f"Distance Covered when SoC was 0.00% to UV = {dist_after_zero:.1f} km",
+        ha="center", va="center", fontsize=12, fontweight="bold", color="red"
     )
+    y -= row_h
+
+    # ---------------------------------------------------------
+    # Totals row
+    # ---------------------------------------------------------
+    ax.add_patch(Rectangle((0, y), col_w[0], row_h, fc="white", ec="black"))
+
+    ax.add_patch(Rectangle((col_w[0], y), col_w[1], row_h, fc="#a0d0ff", ec="black"))
+    ax.text(col_w[0] + col_w[1]/2, y + row_h/2, f"Range = {total_range:.1f} km", ha="center", va="center")
 
     display_cap = total_cap_override if total_cap_override else total_cap
 
-    ax.add_patch(
-        Rectangle(
-            (col_w[0] + col_w[1], y),
-            col_w[2],
-            row_h,
-            fc="#a0d0ff",
-            ec="black",
-        )
-    )
-    ax.text(
-        col_w[0] + col_w[1] + col_w[2] / 2,
-        y + row_h / 2,
-        f"Total CAP exc = {display_cap:.2f} Ah",
-        ha="center",
-        va="center",
-    )
+    ax.add_patch(Rectangle((col_w[0] + col_w[1], y), col_w[2], row_h, fc="#a0d0ff", ec="black"))
+    ax.text(col_w[0] + col_w[1] + col_w[2]/2, y + row_h/2, f"Total CAP exc = {display_cap:.2f} Ah", ha="center", va="center")
 
-    ax.add_patch(
-        Rectangle(
-            (col_w[0] + col_w[1] + col_w[2], y),
-            col_w[3],
-            row_h,
-            fc="#a0d0ff",
-            ec="black",
-        )
-    )
+    ax.add_patch(Rectangle((col_w[0] + col_w[1] + col_w[2], y), col_w[3], row_h, fc="#a0d0ff", ec="black"))
 
     plt.tight_layout()
     plt.savefig(output, dpi=150, bbox_inches="tight")
@@ -682,7 +614,7 @@ def main():
 
     soc_list, current_list, odo_list, ntc_list, uv_list = parse_trc(trc)
 
-    rows, total_range = build_windows(
+    rows, total_range, dist_after_zero = build_windows(   ### >>> MODIFIED
         soc_list, current_list, odo_list, ntc_list, uv_list, trc
     )
 
@@ -700,19 +632,15 @@ def main():
         }
     }
 
-    (out / "Capacity_check_summary.json").write_text(
-        json.dumps(summary, indent=4)
-    )
-
-    (out / "Capacity_check_results.json").write_text(
-        json.dumps({"Result": "PASS"}, indent=4)
-    )
+    (out / "Capacity_check_summary.json").write_text(json.dumps(summary, indent=4))
+    (out / "Capacity_check_results.json").write_text(json.dumps({"Result": "PASS"}, indent=4))
 
     draw_table_png(
         rows,
         out / "Capacity_check_plot.png",
         total_cap_override=stats["exchange_ah"],
         total_range=total_range,
+        dist_after_zero=dist_after_zero   ### >>> ADDED
     )
 
 
