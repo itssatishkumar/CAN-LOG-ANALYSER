@@ -69,7 +69,7 @@ def parse_trc_for_110(filepath):
 
                 b4, b5, b6, b7 = [int(x, 16) for x in data_str[4:8]]
                 raw = struct.unpack("<i", bytes([b4, b5, b6, b7]))[0]
-                current = raw * 1e-5
+                current = raw * 1e-5  # A
 
                 currents.append(current)
                 ts = parse_timestamp(match_110.group(1))
@@ -88,7 +88,7 @@ def parse_trc_for_110(filepath):
                 dlco = dlco_raw * 0.1  # A on bus, negate for discharge
 
                 dlci_vals.append(dlci)
-                dlco_vals.append(-dlco)
+                dlco_vals.append(-dlco)  # discharge limit (negative)
                 ts = parse_timestamp(match_012a.group(1))
                 dl_ts.append(ts)
 
@@ -99,7 +99,7 @@ def parse_trc_for_110(filepath):
 
                 b0, b1 = [int(x, 16) for x in data_str[0:2]]
                 soc_raw = struct.unpack("<H", bytes([b0, b1]))[0]
-                soc = soc_raw * 0.01  # SoC scaling
+                soc = soc_raw * 0.01  # SoC %
                 soc_vals.append(soc)
                 ts = parse_timestamp(match_109.group(1))
                 soc_ts.append(ts)
@@ -176,6 +176,110 @@ def build_soc_axis(ax, soc_x, soc_vals, label="SoC (%)"):
     return sec_ax
 
 
+def format_duration(seconds: float) -> str:
+    if seconds <= 0 or seconds != seconds:  # NaN check
+        return ""
+    seconds = int(round(seconds))
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def compute_overcurrent_instances(
+    timestamps, currents, dl_ts, dlco_vals, soc_ts, soc_vals
+):
+    """
+    Find sessions where pack current is more negative than DCLO:
+        current < DCLO (both negative)
+    Returns list of dicts with duration, avg DCLO, avg current, SoC at start.
+    """
+    # Filter valid data
+    cur_samples = [(t, c) for t, c in zip(timestamps, currents) if t is not None]
+    dl_samples = [(t, d) for t, d in zip(dl_ts, dlco_vals) if t is not None]
+    soc_samples = [(t, s) for t, s in zip(soc_ts, soc_vals) if t is not None]
+
+    if not cur_samples or not dl_samples:
+        return []
+
+    cur_samples.sort(key=lambda x: x[0])
+    dl_samples.sort(key=lambda x: x[0])
+    soc_samples.sort(key=lambda x: x[0])
+
+    dl_idx = 0
+    soc_idx = 0
+    last_dl = None
+    last_soc = None
+
+    instances = []
+    in_session = False
+    sess_start_time = None
+    sess_end_time = None
+    sum_dl = 0.0
+    sum_i = 0.0
+    count = 0
+    soc_at_start = None
+
+    for t, i_val in cur_samples:
+        # update DCLO & SoC to "latest at or before t"
+        while dl_idx < len(dl_samples) and dl_samples[dl_idx][0] <= t:
+            last_dl = dl_samples[dl_idx][1]
+            dl_idx += 1
+        while soc_idx < len(soc_samples) and soc_samples[soc_idx][0] <= t:
+            last_soc = soc_samples[soc_idx][1]
+            soc_idx += 1
+
+        if last_dl is None:
+            continue
+
+        # We only care where DCLO is negative (discharge limit)
+        over = (last_dl < 0) and (i_val < last_dl)
+
+        if over:
+            if not in_session:
+                # start new session
+                in_session = True
+                sess_start_time = t
+                soc_at_start = last_soc
+                sum_dl = 0.0
+                sum_i = 0.0
+                count = 0
+            sess_end_time = t
+            sum_dl += last_dl
+            sum_i += i_val
+            count += 1
+        else:
+            if in_session and count > 0:
+                duration = (sess_end_time - sess_start_time).total_seconds()
+                instances.append(
+                    {
+                        "start_time": sess_start_time,
+                        "end_time": sess_end_time,
+                        "duration_sec": duration,
+                        "avg_dclo": sum_dl / count,
+                        "avg_current": sum_i / count,
+                        "soc_start": soc_at_start,
+                    }
+                )
+            in_session = False
+
+    # flush if still open at end
+    if in_session and count > 0:
+        duration = (sess_end_time - sess_start_time).total_seconds()
+        instances.append(
+            {
+                "start_time": sess_start_time,
+                "end_time": sess_end_time,
+                "duration_sec": duration,
+                "avg_dclo": sum_dl / count,
+                "avg_current": sum_i / count,
+                "soc_start": soc_at_start,
+            }
+        )
+
+    return instances
+
+
 def main():
     trc_path = sys.argv[1] if len(sys.argv) > 1 else None
 
@@ -199,6 +303,15 @@ def main():
 
     filtered = [c for c in currents if abs(c) >= 3.0]
     avg_current = sum(filtered) / len(filtered) if filtered else 0
+
+    # ----- compute overcurrent instances (current more negative than DCLO) -----
+    instances = compute_overcurrent_instances(
+        timestamps, currents, dl_ts, dlco_vals, soc_ts, soc_vals
+    )
+    # sort by duration and take top 3
+    instances_sorted = sorted(
+        instances, key=lambda x: x["duration_sec"], reverse=True
+    )[:3]
 
     import matplotlib.dates as mdates
 
@@ -253,7 +366,7 @@ def main():
 
     ax_curr.set_title("DCLI / DCLO Map - Current Profile")
 
-    if (pos and neg) or dl_valid:
+    if (valid_points and (pos or neg)) or dl_valid:
         ax_curr.legend(loc="upper right")
 
     ax_curr.set_ylabel("Current (A)")
@@ -274,17 +387,44 @@ def main():
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
 
+    # ---------- SUMMARY JSON WITH OVER-CURRENT INSTANCES ----------
     summary_path = out_dir / "DCLI_DCLO_Map_summary.json"
 
-    summary_table = {
+    overall_summary = {
         "Max Discharge (Most Negative) [A]": f"{max_negative:.2f}",
         "Max Charge/Regen (Most Positive) [A]": f"{max_positive:.2f}",
-        "Average Current (|I| >= 3A) [A]": f"{avg_current:.2f}"
+        "Average Current (|I| >= 3A) [A]": f"{avg_current:.2f}",
     }
 
-    summary_payload = {"Summary_Table": summary_table}
+    instance_rows = []
+    for idx, inst in enumerate(instances_sorted, start=1):
+        dur_str = format_duration(inst["duration_sec"])
+        dclo_str = f"{inst['avg_dclo']:.0f}A"
+        avg_i_str = f"{inst['avg_current']:.0f}A"
+        if inst["soc_start"] is None:
+            soc_str = ""
+        else:
+            soc_str = f"{inst['soc_start']:.2f}%"
+
+        instance_rows.append(
+            {
+                "Instance": idx,
+                "Duration": dur_str,
+                "DCLO": dclo_str,
+                "PackCurrentAverage": avg_i_str,
+                "SoC": soc_str,
+            }
+        )
+
+    summary_payload = {
+        "Summary_Table": {
+            "Overall": overall_summary,
+            "Over_Current_Instances": instance_rows,
+        }
+    }
     summary_path.write_text(json.dumps(summary_payload, indent=4), encoding="utf-8")
 
+    # Result JSON just indicates script run success
     result_path = out_dir / "DCLI_DCLO_Map_results.json"
     result_status = "PASS" if plot_path.exists() and summary_path.exists() else "FAIL"
     result_path.write_text(json.dumps({"Result": result_status}), encoding="utf-8")
