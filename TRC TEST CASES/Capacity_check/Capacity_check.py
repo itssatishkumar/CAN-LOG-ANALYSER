@@ -79,7 +79,7 @@ def parse_trc(fp):
     with open(fp, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
 
-            # CURRENT
+            # CURRENT (0x110)
             m = RE_110.match(line)
             if m:
                 ts = parse_ts(m.group(1))
@@ -90,19 +90,29 @@ def parse_trc(fp):
                     I = raw * 1e-5
                     current_list.append((ts, I))
 
-            # SOC
+            # SOC (0x109)  --- IGNORE if 5th byte == 0x00
             m = RE_0109.match(line)
             if m:
                 ts = parse_ts(m.group(1))
                 d = m.group(3).split()
-                if ts and len(d) >= 2:
+                if not ts:
+                    continue
+
+                # BMS state / validity byte is at index 4 (5th byte)
+                if len(d) >= 5:
+                    bms_state = int(d[4], 16)
+                    if bms_state == 0:
+                        # SoC not valid → skip this sample completely
+                        continue
+
+                if len(d) >= 2:
                     lo = int(d[0], 16)
                     hi = int(d[1], 16)
                     raw = lo | (hi << 8)
                     soc = raw * 0.01
                     soc_list.append((ts, soc))
 
-            # TEMP (NTC)
+            # TEMP (NTC) (0x14E)
             m = RE_014E.match(line)
             if m:
                 ts = parse_ts(m.group(1))
@@ -110,7 +120,7 @@ def parse_trc(fp):
                 if ts and len(d) >= 2:
                     ntc_list.append((ts, (int(d[0], 16), int(d[1], 16))))
 
-            # ODO
+            # ODO (0x402)
             m = RE_0402.match(line)
             if m:
                 ts = parse_ts(m.group(1))
@@ -124,7 +134,7 @@ def parse_trc(fp):
                     )
                     odo_list.append((ts, raw * 0.1))
 
-            # UV FLAG
+            # UV FLAG (0x258)
             m = RE_0258.match(line)
             if m:
                 ts = parse_ts(m.group(1))
@@ -328,8 +338,15 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
     ntc_list = sorted(ntc_list, key=lambda x: x[0])
     current_list = sorted(current_list, key=lambda x: x[0])
 
+    if not soc_list:
+        # no SOC → nothing to do
+        return [], 0.0, None, False, False
+
     temp_frames = [(ts, (b0 + b1) / 2.0) for ts, (b0, b1) in ntc_list]
 
+    # -----------------------------------------------------
+    # UV timestamp and SoC at UV
+    # -----------------------------------------------------
     uv_ts = None
     for ts, flag in uv_list:
         if flag == 1:
@@ -340,13 +357,11 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
     if uv_ts and soc_list:
         uv_end_soc = get_uv_end_soc(soc_list, uv_ts)
 
-    if not soc_list:
-        return [], 0.0, 0.0, False
-
     ts_all = [t for t, _ in soc_list]
     t_start = ts_all[0]
     t_end = ts_all[-1]
 
+    # Build charge / drive sessions from 0x602
     charge_events = detect_charge_events(fp)
     charging_sessions = build_charge_sessions(charge_events, t_end)
 
@@ -363,6 +378,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
 
     session_blocks.sort(key=lambda x: x[1])
 
+    # Total range from ODO
     total_range = 0.0
     if odo_list:
         total_range = max(0.0, odo_list[-1][1] - odo_list[0][1])
@@ -389,7 +405,9 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
                 soc_baseline = charge_soc_end[1]
             continue
 
+        # For normal driving blocks
         if uv_ts and uv_ts <= block_start:
+            # all after UV -> ignore
             continue
 
         if uv_ts and uv_ts < block_end:
@@ -414,6 +432,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
         if uv_in_this_block and uv_end_soc is not None:
             end_soc = uv_end_soc
 
+        # 10% windows downwards
         while current_soc - end_soc >= 10:
             next_soc = current_soc - 10
 
@@ -452,6 +471,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
             final_rows.append(("normal", current_soc, next_soc, dist, cap_ah, tavg))
             current_soc = next_soc
 
+        # Last partial window
         if current_soc > end_soc:
             window_start_ts = (
                 find_soc_ts(soc_list, current_soc, block_start, block_end_ts)
@@ -489,56 +509,38 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
         soc_baseline = end_soc
 
         if uv_in_this_block:
+            # mark last row as UV window
             if final_rows:
                 last_typ, sv, ev, odo, cap, tavg = final_rows[-1]
                 final_rows[-1] = ("uv", sv, ev, odo, cap, tavg)
             break
 
     # ---------------------------------------------------------
-    # Distance from SOC 0% (respecting 5-sample streak rule)
+    # Distance from SOC <= 1% (your final requirement)
     # ---------------------------------------------------------
     uv_detected = uv_ts is not None
-    last_zero_streak_start = None
-    streak_len = 0
-    last_zero_ts = None
+    low_soc_start_ts = None
 
-    def consider_streak(start_ts, end_ts, length):
-        nonlocal last_zero_streak_start
-        if length < 5:
-            return
-        if uv_detected and end_ts and end_ts > uv_ts:
-            return
-        last_zero_streak_start = start_ts
-
+    # Earliest timestamp where SoC <= 1.0%
     for ts, soc in soc_list:
-        if soc <= 0.5:
-            if streak_len == 0:
-                streak_start_ts = ts
-            streak_len += 1
-            last_zero_ts = ts
-        else:
-            if streak_len >= 5:
-                consider_streak(streak_start_ts, last_zero_ts, streak_len)
-            streak_len = 0
-            last_zero_ts = None
+        if soc <= 1.0:
+            low_soc_start_ts = ts
+            break
 
-    if streak_len >= 5:
-        consider_streak(streak_start_ts, last_zero_ts, streak_len)
+    low_soc_found = low_soc_start_ts is not None
+    dist_after_low_soc = None
 
-    zero_streak_found = last_zero_streak_start is not None
-    dist_after_zero = None
-
-    if zero_streak_found and odo_list:
-        odo_at_zero = lookup_before(last_zero_streak_start, odo_list)
-        if odo_at_zero:
+    if low_soc_found and odo_list:
+        odo_at_low = lookup_before(low_soc_start_ts, odo_list)
+        if odo_at_low:
             if uv_detected:
                 odo_at_end = lookup_before(uv_ts, odo_list)
             else:
                 odo_at_end = odo_list[-1]
             if odo_at_end:
-                dist_after_zero = max(0.0, odo_at_end[1] - odo_at_zero[1])
+                dist_after_low_soc = max(0.0, odo_at_end[1] - odo_at_low[1])
 
-    return final_rows, total_range, dist_after_zero, uv_detected, zero_streak_found
+    return final_rows, total_range, dist_after_low_soc, uv_detected, low_soc_found
 
 
 # =========================================================
@@ -549,9 +551,9 @@ def draw_table_png(
     output,
     total_cap_override=None,
     total_range=0.0,
-    dist_after_zero=0.0,
+    dist_after_low_soc=0.0,
     uv_detected=False,
-    zero_streak_found=False,
+    low_soc_found=False,
 ):
 
     cols = ["SoC Window", "Odo", "Cap Exchange", "Temp Avg"]
@@ -567,7 +569,7 @@ def draw_table_png(
     x = 0
     for i, h in enumerate(cols):
         ax.add_patch(Rectangle((x, y), col_w[i], header_h, fc="#d0d0d0", ec="black"))
-        ax.text(x + col_w[i]/2, y + header_h/2, h, ha="center", va="center")
+        ax.text(x + col_w[i] / 2, y + header_h / 2, h, ha="center", va="center")
         x += col_w[i]
     y -= row_h
 
@@ -578,7 +580,7 @@ def draw_table_png(
         if typ == "charge":
             msg = f"Charging session: {sv:.2f}% -> {ev:.2f}%"
             ax.add_patch(Rectangle((0, y), 1, row_h, fc="#fce88c", ec="black"))
-            ax.text(0.5, y + row_h/2, msg, ha="center", va="center")
+            ax.text(0.5, y + row_h / 2, msg, ha="center", va="center")
             y -= row_h
             continue
 
@@ -594,23 +596,23 @@ def draw_table_png(
         x = 0
         for val, w in zip([sw, cd, ce, tv], col_w):
             ax.add_patch(Rectangle((x, y), w, row_h, fc="white", ec="black"))
-            ax.text(x + w/2, y + row_h/2, val, ha="center", va="center")
+            ax.text(x + w / 2, y + row_h / 2, val, ha="center", va="center")
             x += w
 
         total_cap += cap
         y -= row_h
 
     # ---------------------------------------------------------
-    # Extra row for Distance after SoC 0%
+    # Extra row for Distance after SoC <= 1%
     # ---------------------------------------------------------
-    if not zero_streak_found:
-        msg = "Distance Covered when SoC was 0.00% = N/A"
-    elif uv_detected and dist_after_zero is not None:
-        msg = f"Distance Covered when SoC was 0.00% to UV = {dist_after_zero:.1f} km"
-    elif dist_after_zero is not None:
-        msg = f"Distance Covered when SoC was 0.00% = {dist_after_zero:.1f} km (UV Not detected)"
+    if not low_soc_found:
+        msg = "Distance Covered SoC<=1% = N/A"
+    elif uv_detected and dist_after_low_soc is not None:
+        msg = f"Distance Covered SoC<=1% to UV = {dist_after_low_soc:.1f} km"
+    elif dist_after_low_soc is not None:
+        msg = f"Distance Covered SoC<=1% = {dist_after_low_soc:.1f} km (UV Not detected)"
     else:
-        msg = "Distance Covered when SoC was 0.00% = N/A"
+        msg = "Distance Covered SoC<=1% = N/A"
 
     ax.add_patch(Rectangle((0, y), 1, row_h, fc="white", ec="black"))
     ax.text(
@@ -639,7 +641,8 @@ def draw_table_png(
         va="center",
     )
 
-    display_cap = total_cap_override if total_cap_override else total_cap
+    total_cap = total_cap if total_cap is not None else 0.0
+    display_cap = total_cap_override if total_cap_override is not None else total_cap
 
     ax.add_patch(
         Rectangle((col_w[0] + col_w[1], y), col_w[2], row_h, fc="#a0d0ff", ec="black")
@@ -686,9 +689,13 @@ def main():
 
     soc_list, current_list, odo_list, ntc_list, uv_list = parse_trc(trc)
 
-    rows, total_range, dist_after_zero, uv_detected, zero_streak_found = build_windows(
-        soc_list, current_list, odo_list, ntc_list, uv_list, trc
-    )
+    (
+        rows,
+        total_range,
+        dist_after_low_soc,
+        uv_detected,
+        low_soc_found,
+    ) = build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, trc)
 
     out = Path(__file__).resolve().parent
 
@@ -714,9 +721,9 @@ def main():
         out / "Capacity_check_plot.png",
         total_cap_override=stats["exchange_ah"],
         total_range=total_range,
-        dist_after_zero=dist_after_zero,
+        dist_after_low_soc=dist_after_low_soc,
         uv_detected=uv_detected,
-        zero_streak_found=zero_streak_found,
+        low_soc_found=low_soc_found,
     )
 
 
