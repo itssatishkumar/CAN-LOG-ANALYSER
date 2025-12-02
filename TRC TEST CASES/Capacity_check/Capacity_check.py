@@ -102,7 +102,7 @@ def parse_trc(fp):
                 if len(d) >= 5:
                     bms_state = int(d[4], 16)
                     if bms_state == 0:
-                        # SoC not valid → skip this sample completely
+                        # SoC not valid – skip this sample completely
                         continue
 
                 if len(d) >= 2:
@@ -328,6 +328,26 @@ def get_uv_end_soc(soc_list, uv_ts):
     return 0.0
 
 
+def window_temp_avg(temp_samples, start_ts, end_ts):
+    """
+    Average valid temperature samples within [start_ts, end_ts].
+    temp_samples: list of (timestamp, sample_avg) already filtered for validity.
+    Returns (avg or None, count).
+    """
+    total = 0.0
+    count = 0
+    for ts, sval in temp_samples:
+        if ts < start_ts:
+            continue
+        if ts > end_ts:
+            break
+        total += sval
+        count += 1
+    if count == 0:
+        return None, 0
+    return total / count, count
+
+
 # =========================================================
 #  BUILD WINDOWS
 # =========================================================
@@ -339,10 +359,23 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
     current_list = sorted(current_list, key=lambda x: x[0])
 
     if not soc_list:
-        # no SOC → nothing to do
+        # no SOC – nothing to do
         return [], 0.0, None, False, False
 
-    temp_frames = [(ts, (b0 + b1) / 2.0) for ts, (b0, b1) in ntc_list]
+    temp_samples = []
+    zero_streak = 0
+    streak_found = False
+    for ts, (tmax, tmin) in ntc_list:
+        if not streak_found:
+            if tmax == 0 or tmin == 0:
+                zero_streak += 1
+                if zero_streak >= 5:
+                    streak_found = True
+                continue
+            zero_streak = 0
+            temp_samples.append((ts, (tmax + tmin) / 2.0))
+        else:
+            temp_samples.append((ts, (tmax + tmin) / 2.0))
 
     # -----------------------------------------------------
     # UV timestamp and SoC at UV
@@ -458,13 +491,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
                     dist = 0.0
                 odo_baseline = odo_end[1]
 
-            temp_start = lookup_before(window_start_ts, temp_frames)
-            temp_end = lookup_before(window_end_ts, temp_frames)
-            if not temp_start and temp_frames:
-                temp_start = temp_frames[0]
-            if not temp_end and temp_frames:
-                temp_end = temp_frames[-1]
-            tavg = ((temp_start[1] + temp_end[1]) / 2) if temp_start and temp_end else None
+            tavg, _ = window_temp_avg(temp_samples, window_start_ts, window_end_ts)
 
             cap_ah = integrate_window(current_list, window_start_ts, window_end_ts)
 
@@ -495,13 +522,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
                     dist = 0.0
                 odo_baseline = odo_end[1]
 
-            temp_start = lookup_before(window_start_ts, temp_frames)
-            temp_end = lookup_before(window_end_ts, temp_frames)
-            if not temp_start and temp_frames:
-                temp_start = temp_frames[0]
-            if not temp_end and temp_frames:
-                temp_end = temp_frames[-1]
-            tavg = ((temp_start[1] + temp_end[1]) / 2) if temp_start and temp_end else None
+            tavg, _ = window_temp_avg(temp_samples, window_start_ts, window_end_ts)
 
             cap_ah = integrate_window(current_list, window_start_ts, window_end_ts)
             final_rows.append(("normal", current_soc, end_soc, dist, cap_ah, tavg))
