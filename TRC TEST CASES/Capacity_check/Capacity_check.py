@@ -218,14 +218,50 @@ def lookup_after(ts, data):
     return None
 
 
+# =========================================================
+#  FIXED: EXACT/STEP SoC TIMESTAMP SELECTION (0.01% resolution)
+#  - lock to 'target' (e.g., 10.00)
+#  - if missing, take the closest available below target in 0.01 steps
+#  - do not touch any other logic
+# =========================================================
 def find_soc_ts(soc_list, target, start_ts, end_ts, reverse=False, tol=0.15):
+    """
+    For 0.01% SoC resolution:
+      1) Prefer exact target match (within a tiny epsilon)
+      2) If not present, choose the highest SoC < target within [start_ts, end_ts]
+         (i.e., nearest below target), which effectively implements stepping down
+         by 0.01 until found.
+    The returned timestamp is:
+      - earliest occurrence for forward search
+      - latest occurrence for reverse search
+    """
+    if not soc_list:
+        return None
+
+    EPS = 1e-9  # tighter than tol; we want true "exact" for 0.01 quantized values
+    best_ts = None
+    best_soc = None
+
+    data = reversed(soc_list) if reverse else soc_list
+
+    # Pass 1: exact target (quantized) match
+    for ts, soc in data:
+        if ts < start_ts or ts > end_ts:
+            continue
+        if abs(soc - target) <= EPS:
+            return ts
+
+    # Pass 2: nearest below target (max soc < target)
     data = reversed(soc_list) if reverse else soc_list
     for ts, soc in data:
         if ts < start_ts or ts > end_ts:
             continue
-        if abs(soc - target) < tol:
-            return ts
-    return None
+        if soc < target - EPS:
+            if best_soc is None or soc > best_soc:
+                best_soc = soc
+                best_ts = ts
+
+    return best_ts
 
 
 # =========================================================
