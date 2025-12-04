@@ -102,7 +102,6 @@ def parse_trc(fp):
                 if len(d) >= 5:
                     bms_state = int(d[4], 16)
                     if bms_state == 0:
-                        # SoC not valid – skip this sample completely
                         continue
 
                 if len(d) >= 2:
@@ -220,31 +219,18 @@ def lookup_after(ts, data):
 
 # =========================================================
 #  FIXED: EXACT/STEP SoC TIMESTAMP SELECTION (0.01% resolution)
-#  - lock to 'target' (e.g., 10.00)
-#  - if missing, take the closest available below target in 0.01 steps
-#  - do not touch any other logic
 # =========================================================
 def find_soc_ts(soc_list, target, start_ts, end_ts, reverse=False, tol=0.15):
-    """
-    For 0.01% SoC resolution:
-      1) Prefer exact target match (within a tiny epsilon)
-      2) If not present, choose the highest SoC < target within [start_ts, end_ts]
-         (i.e., nearest below target), which effectively implements stepping down
-         by 0.01 until found.
-    The returned timestamp is:
-      - earliest occurrence for forward search
-      - latest occurrence for reverse search
-    """
     if not soc_list:
         return None
 
-    EPS = 1e-9  # tighter than tol; we want true "exact" for 0.01 quantized values
+    EPS = 1e-9
     best_ts = None
     best_soc = None
 
     data = reversed(soc_list) if reverse else soc_list
 
-    # Pass 1: exact target (quantized) match
+    # Pass 1: exact target match
     for ts, soc in data:
         if ts < start_ts or ts > end_ts:
             continue
@@ -365,11 +351,6 @@ def get_uv_end_soc(soc_list, uv_ts):
 
 
 def window_temp_avg(temp_samples, start_ts, end_ts):
-    """
-    Average valid temperature samples within [start_ts, end_ts].
-    temp_samples: list of (timestamp, sample_avg) already filtered for validity.
-    Returns (avg or None, count).
-    """
     total = 0.0
     count = 0
     for ts, sval in temp_samples:
@@ -395,9 +376,9 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
     current_list = sorted(current_list, key=lambda x: x[0])
 
     if not soc_list:
-        # no SOC – nothing to do
         return [], 0.0, None, False, False
 
+    # Build valid temp samples
     temp_samples = []
     zero_streak = 0
     streak_found = False
@@ -413,9 +394,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
         else:
             temp_samples.append((ts, (tmax + tmin) / 2.0))
 
-    # -----------------------------------------------------
-    # UV timestamp and SoC at UV
-    # -----------------------------------------------------
+    # UV timestamp
     uv_ts = None
     for ts, flag in uv_list:
         if flag == 1:
@@ -430,7 +409,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
     t_start = ts_all[0]
     t_end = ts_all[-1]
 
-    # Build charge / drive sessions from 0x602
+    # Charging sessions
     charge_events = detect_charge_events(fp)
     charging_sessions = build_charge_sessions(charge_events, t_end)
 
@@ -447,7 +426,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
 
     session_blocks.sort(key=lambda x: x[1])
 
-    # Total range from ODO
+    # Total range
     total_range = 0.0
     if odo_list:
         total_range = max(0.0, odo_list[-1][1] - odo_list[0][1])
@@ -458,25 +437,41 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
 
     for typ, block_start, block_end in session_blocks:
 
+        # -----------------------------
+        # CHARGE BLOCK (NOW WITH Ah + Temp)
+        # -----------------------------
         if typ == "charge":
             charge_soc_start = lookup_before(block_start, soc_list)
             charge_soc_end = lookup_before(block_end, soc_list)
-            charge_odo_end = lookup_before(block_end, odo_list)
+
+            # distance during charge (optional, usually ~0)
+            dist = 0.0
+            if odo_list:
+                odo_start = lookup_before(block_start, odo_list)
+                odo_end = lookup_before(block_end, odo_list)
+                if odo_start and odo_end:
+                    dist = max(0.0, odo_end[1] - odo_start[1])
+
+            cap_ah = integrate_window(current_list, block_start, block_end)
+            tavg, _ = window_temp_avg(temp_samples, block_start, block_end)
 
             if charge_soc_start and charge_soc_end:
                 final_rows.append(
-                    ("charge", charge_soc_start[1], charge_soc_end[1], 0.0, 0.0, None)
+                    ("charge", charge_soc_start[1], charge_soc_end[1], dist, cap_ah, tavg)
                 )
 
+            # update baselines
+            charge_odo_end = lookup_before(block_end, odo_list)
             if charge_odo_end:
                 odo_baseline = charge_odo_end[1]
             if charge_soc_end:
                 soc_baseline = charge_soc_end[1]
             continue
 
-        # For normal driving blocks
+        # -----------------------------
+        # NORMAL (DRIVING) BLOCKS
+        # -----------------------------
         if uv_ts and uv_ts <= block_start:
-            # all after UV -> ignore
             continue
 
         if uv_ts and uv_ts < block_end:
@@ -528,7 +523,6 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
                 odo_baseline = odo_end[1]
 
             tavg, _ = window_temp_avg(temp_samples, window_start_ts, window_end_ts)
-
             cap_ah = integrate_window(current_list, window_start_ts, window_end_ts)
 
             final_rows.append(("normal", current_soc, next_soc, dist, cap_ah, tavg))
@@ -559,26 +553,24 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
                 odo_baseline = odo_end[1]
 
             tavg, _ = window_temp_avg(temp_samples, window_start_ts, window_end_ts)
-
             cap_ah = integrate_window(current_list, window_start_ts, window_end_ts)
+
             final_rows.append(("normal", current_soc, end_soc, dist, cap_ah, tavg))
 
         soc_baseline = end_soc
 
         if uv_in_this_block:
-            # mark last row as UV window
             if final_rows:
                 last_typ, sv, ev, odo, cap, tavg = final_rows[-1]
                 final_rows[-1] = ("uv", sv, ev, odo, cap, tavg)
             break
 
     # ---------------------------------------------------------
-    # Distance from SOC <= 1% (your final requirement)
+    # Distance from SOC <= 1%
     # ---------------------------------------------------------
     uv_detected = uv_ts is not None
     low_soc_start_ts = None
 
-    # Earliest timestamp where SoC <= 1.0%
     for ts, soc in soc_list:
         if soc <= 1.0:
             low_soc_start_ts = ts
@@ -634,10 +626,20 @@ def draw_table_png(
 
     for typ, sv, ev, odo, cap, tavg in rows:
 
+        # Charge row shown in columns (yellow)
         if typ == "charge":
-            msg = f"Charging session: {sv:.2f}% -> {ev:.2f}%"
-            ax.add_patch(Rectangle((0, y), 1, row_h, fc="#fce88c", ec="black"))
-            ax.text(0.5, y + row_h / 2, msg, ha="center", va="center")
+            sw = f"CHG: {sv:.2f}% to {ev:.2f}%"
+            cd = f"{odo:.2f}"
+            ce = f"{cap:.2f} Ah"
+            tv = f"{tavg:.1f} C" if tavg is not None else ""
+
+            x = 0
+            for val, w in zip([sw, cd, ce, tv], col_w):
+                ax.add_patch(Rectangle((x, y), w, row_h, fc="#fce88c", ec="black"))
+                ax.text(x + w / 2, y + row_h / 2, val, ha="center", va="center")
+                x += w
+
+            total_cap += cap
             y -= row_h
             continue
 
@@ -659,9 +661,7 @@ def draw_table_png(
         total_cap += cap
         y -= row_h
 
-    # ---------------------------------------------------------
     # Extra row for Distance after SoC <= 1%
-    # ---------------------------------------------------------
     if not low_soc_found:
         msg = "Distance Covered SoC<=1% = N/A"
     elif uv_detected and dist_after_low_soc is not None:
@@ -684,9 +684,7 @@ def draw_table_png(
     )
     y -= row_h
 
-    # ---------------------------------------------------------
     # Totals row
-    # ---------------------------------------------------------
     ax.add_patch(Rectangle((0, y), col_w[0], row_h, fc="white", ec="black"))
 
     ax.add_patch(Rectangle((col_w[0], y), col_w[1], row_h, fc="#a0d0ff", ec="black"))
@@ -698,7 +696,6 @@ def draw_table_png(
         va="center",
     )
 
-    total_cap = total_cap if total_cap is not None else 0.0
     display_cap = total_cap_override if total_cap_override is not None else total_cap
 
     ax.add_patch(
@@ -756,6 +753,7 @@ def main():
 
     out = Path(__file__).resolve().parent
 
+    # keep summary json as-is (raw current integration totals)
     stats = summarize_current(current_list)
     summary = {
         "Capacity_Summary": {
@@ -773,10 +771,11 @@ def main():
         json.dumps({"Result": "PASS"}, indent=4)
     )
 
+    # IMPORTANT: do NOT override total cap; table total includes charging rows now
     draw_table_png(
         rows,
         out / "Capacity_check_plot.png",
-        total_cap_override=stats["exchange_ah"],
+        total_cap_override=None,
         total_range=total_range,
         dist_after_low_soc=dist_after_low_soc,
         uv_detected=uv_detected,
