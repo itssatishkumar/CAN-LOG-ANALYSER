@@ -59,6 +59,8 @@ ERROR_SIGNALS = {
     "History_ActiveErrorGroup1": {"can_id": 0x0260, "type": "byte", "byte": 1},
     "History_ActiveErrorGroup2": {"can_id": 0x0260, "type": "byte", "byte": 2},
     "SD_Power_off_Pending":      {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 0},
+    "Isolation_warning":         {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 1},
+    "Isolation_Failure":         {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 2},
 }
 
 INTERESTING_CAN_IDS = set(v["can_id"] for v in ERROR_SIGNALS.values())
@@ -77,6 +79,8 @@ DISPLAY_ORDER = [
     "CCM_FAIL",
     "CMU_FAIL",
     "HardFaultPresent",
+    "Isolation_Failure",
+    "Isolation_warning",
     "History_ActiveErrorGroup1",
     "History_ActiveErrorGroup2",
     "OCC_ERROR",
