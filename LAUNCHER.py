@@ -255,11 +255,26 @@ class CANLogDebugger(QWidget):
         self.result_refresh_timer.timeout.connect(self._refresh_pending_results)
 
         # ---------------- TITLE ----------------
+        self.version_label = QLabel(self._read_version_text())
+        self.version_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        self.version_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.version_label.setStyleSheet("color:white; padding:0 12px; background:transparent;")
+        self.version_label.setToolTip("Read from version.txt")
+
         title = QLabel("CAN LOG ANALYSER")
         title.setFont(QFont("Segoe UI", 20, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("background:#0033CC; color:#00FFFF; padding:10px;")
-        self._init_title_animation(title)
+        title.setStyleSheet("color:#00FFFF; padding:10px; font-weight:bold; background:transparent;")
+
+        title_bar = QFrame()
+        title_bar_layout = QHBoxLayout()
+        title_bar_layout.setContentsMargins(10, 6, 10, 6)
+        title_bar_layout.setSpacing(10)
+        title_bar_layout.addWidget(self.version_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        title_bar_layout.addWidget(title, 1, Qt.AlignCenter)
+        title_bar.setLayout(title_bar_layout)
+
+        self._init_title_animation(title, title_bar)
 
         # ---------------------------------------------------
         # LEFT PANEL
@@ -492,7 +507,7 @@ class CANLogDebugger(QWidget):
         main.addWidget(right_frame, 1)
 
         final = QVBoxLayout()
-        final.addWidget(title)
+        final.addWidget(title_bar)
         final.addLayout(main)
 
         self.setLayout(final)
@@ -500,13 +515,28 @@ class CANLogDebugger(QWidget):
     # ======================================================
     # UTILS: CELL STYLING & SCRIPT PATHS
     # ======================================================
-    def _init_title_animation(self, label: QLabel):
+    def _read_version_text(self) -> str:
+        version_file = os.path.join(self.script_dir, "version.txt")
+        try:
+            with open(version_file, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+        except FileNotFoundError:
+            raw = ""
+        except Exception:
+            raw = ""
+
+        raw = raw.lstrip("vV")
+        return f"v{raw or '0.0.0'}"
+
+    def _init_title_animation(self, label: QLabel, container: Optional[QFrame] = None):
         """Animate title with a moving glow effect."""
         self.title_label = label
+        self.title_container = container
         self.title_anim_step = 0
         self.title_anim_timer = QTimer(self)
         self.title_anim_timer.timeout.connect(self._update_title_glow)
         self.title_anim_timer.start(120)
+        self._update_title_glow()
 
     def _update_title_glow(self):
         if not getattr(self, "title_label", None):
@@ -515,13 +545,26 @@ class CANLogDebugger(QWidget):
         highlight = self.title_anim_step / 100.0
         start = max(0.0, highlight - 0.2)
         end = min(1.0, highlight + 0.2)
+        gradient = (
+            "qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
+            f"stop:0 #001F6B, stop:{start:.2f} #0033CC, stop:{highlight:.2f} #4DE8FF, "
+            f"stop:{end:.2f} #0033CC, stop:1 #001F6B)"
+        )
         style = (
             "color:#00FFFF; padding:10px; font-weight:bold;"
-            "background:qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
-            f"stop:0 #001F6B, stop:{start:.2f} #0033CC, stop:{highlight:.2f} #4DE8FF, "
-            f"stop:{end:.2f} #0033CC, stop:1 #001F6B);"
+            f"background:{gradient};"
         )
-        self.title_label.setStyleSheet(style)
+        if getattr(self, "title_container", None):
+            self.title_container.setStyleSheet(f"background:{gradient}; border:0px;")
+            self.title_label.setStyleSheet(
+                "color:#00FFFF; padding:10px; font-weight:bold; background:transparent;"
+            )
+            if getattr(self, "version_label", None):
+                self.version_label.setStyleSheet(
+                    "color:white; padding:0 12px; font-weight:bold; background:transparent;"
+                )
+        else:
+            self.title_label.setStyleSheet(style)
 
         # Mirror the running glow on the log organiser button while active
         if getattr(self, "make_btn_animating", False) and getattr(self, "make_btn", None):
