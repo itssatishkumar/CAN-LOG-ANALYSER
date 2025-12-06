@@ -3,7 +3,7 @@ import struct
 import sys
 import tkinter as tk
 from tkinter import filedialog
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import json
 import os
@@ -12,9 +12,71 @@ from matplotlib.patches import Rectangle
 
 
 # =========================================================
-#  CAN ID REGEX
+#  THERM CAN MAP (per-sensor temps)
+#  NOTE: Tavg remains from 0x014E as in your original logic.
 # =========================================================
+THERM_CAN_MAP = {
+    1:  (0x0112, [0, 1, 2, 3, 4, 5]),              # Only 6 external NTCs
+    2:  (0x0130, list(range(8))),
+    3:  (0x0131, list(range(8))),
+    4:  (0x0132, list(range(8))),
+    5:  (0x0133, list(range(8))),
+    6:  (0x0134, list(range(8))),
+    7:  (0x0135, list(range(8))),
+    8:  (0x0136, list(range(8))),
+    9:  (0x0137, [0, 1]),                          # Only 2 external NTCs
+    10: (0x014F, [0, 1, 2, 3])                     # 4 Master Pack NTCs
+}
 
+
+def build_ntc_names(total_sensors=68):
+    names = []
+    for idx in range(total_sensors):
+        if idx < 64:
+            names.append(f"ExtTherm_{idx+1}")
+        else:
+            names.append(f"Master_NTC_{idx-63}")
+    return names
+
+
+def format_sensor_names(sensor_str: str):
+    """
+    Collapse repeated ExtTherm_ prefixes to make lists shorter.
+    Example: 'ExtTherm_1, ExtTherm_2' -> 'ExtTherm_1, 2'
+    """
+    if not sensor_str:
+        return sensor_str
+
+    parts = [p.strip() for p in sensor_str.split(",") if p.strip()]
+    out = []
+    ext_seen = False
+    prefix = "ExtTherm_"
+
+    for p in parts:
+        if p.startswith(prefix):
+            num = p[len(prefix):]
+            if num.isdigit():
+                if not ext_seen:
+                    out.append(p)
+                    ext_seen = True
+                else:
+                    out.append(num)
+                continue
+        out.append(p)
+
+    return ", ".join(out)
+
+
+def make_can_regex(can_hex_4: str):
+    return re.compile(
+        rf"\s*\d+\)\s+"
+        rf"(\d{{2}}-\d{{2}}-\d{{4}}\s+\d{{2}}:\d{{2}}:\d{{2}}\.\d+)\s+(Rx|Tx)\s+{can_hex_4}\s+8\s+(.+)"
+    )
+
+
+# =========================================================
+#  CAN ID REGEX (original)
+# =========================================================
 RE_110 = re.compile(
     r"\s*\d+\)\s+"
     r"(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+0110\s+8\s+(.+)"
@@ -51,6 +113,155 @@ def parse_ts(t):
         return datetime.strptime(t, "%d-%m-%Y %H:%M:%S.%f")
     except Exception:
         return None
+
+
+# =========================================================
+#  THERM FRAME REGEX + PARSER (per-sensor temps)
+# =========================================================
+THERM_RE = {can_id: make_can_regex(f"{can_id:04X}") for (_, (can_id, _)) in THERM_CAN_MAP.items()}
+
+
+def decode_temp_byte(b: int) -> float:
+    """
+    If your temp encoding is different, adjust here.
+    Currently assumes each byte is directly degrees C (0..255).
+    """
+    return float(b)
+
+
+def parse_thermistor_frames(fp):
+    """
+    Returns list of (ts, temps_dict)
+      temps_dict: {sensor_index: tempC}
+    Indices:
+      0..63  -> ExtTherm_1..64
+      64..67 -> Master_NTC_1..4
+    """
+    can_to_group = {can_id: (g, byte_idxs) for g, (can_id, byte_idxs) in THERM_CAN_MAP.items()}
+
+    out = []
+    with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            m = None
+            can_id = None
+            for cid, rx in THERM_RE.items():
+                mm = rx.match(line)
+                if mm:
+                    m = mm
+                    can_id = cid
+                    break
+
+            if not m:
+                continue
+
+            ts = parse_ts(m.group(1))
+            if not ts:
+                continue
+
+            d = m.group(3).split()
+            if len(d) < 8:
+                continue
+            payload = [int(x, 16) for x in d[:8]]
+
+            group_key, byte_idxs = can_to_group[can_id]
+
+            # group -> base index in your flattened 0..67 indexing
+            if group_key == 1:
+                base = 0
+            elif 2 <= group_key <= 9:
+                base = 6 + (group_key - 2) * 8
+            else:  # group 10
+                base = 64
+
+            temps = {}
+            for j, bidx in enumerate(byte_idxs):
+                idx = base + j
+                if idx >= 68:
+                    continue
+                temps[idx] = decode_temp_byte(payload[bidx])
+
+            out.append((ts, temps))
+
+    return sorted(out, key=lambda x: x[0])
+
+
+def detect_active_ntc_from_therms(therm_samples, seconds=10):
+    """
+    Optional: detect which sensors are active in the first N seconds.
+    If none detected, we fall back to using all sensors seen in the window.
+    """
+    if not therm_samples:
+        return []
+
+    t0 = therm_samples[0][0]
+    t_end = t0 + timedelta(seconds=seconds)
+
+    active = set()
+    for ts, temps in therm_samples:
+        if ts < t0:
+            continue
+        if ts > t_end:
+            break
+        for idx, v in temps.items():
+            if isinstance(v, (int, float)) and v > 0:
+                active.add(idx)
+
+    return sorted(active)
+
+
+def window_minmax_from_therms(therm_samples, start_ts, end_ts, ntc_names, active_ntc=None):
+    """
+    Returns (tmax, tmax_name, tmin, tmin_name) based on per-sensor signals.
+    Does NOT affect Tavg (Tavg continues to use 0x014E logic).
+    """
+    active = set(active_ntc) if active_ntc is not None else None
+    max_v = None
+    max_ts = None
+    max_idxs = set()
+    min_v = None
+    min_ts = None
+    min_idxs = set()
+
+    for ts, temps in therm_samples:
+        if ts < start_ts:
+            continue
+        if ts > end_ts:
+            break
+
+        for idx, v in temps.items():
+            if active is not None and idx not in active:
+                continue
+            if v is None or v <= 0:
+                continue
+
+            # Track max with ties only if they occur at the same timestamp
+            if max_v is None or v > max_v:
+                max_v = v
+                max_ts = ts
+                max_idxs = {idx}
+            elif v == max_v and ts == max_ts:
+                max_idxs.add(idx)
+
+            # Track min with ties only if they occur at the same timestamp
+            if min_v is None or v < min_v:
+                min_v = v
+                min_ts = ts
+                min_idxs = {idx}
+            elif v == min_v and ts == min_ts:
+                min_idxs.add(idx)
+
+    if max_v is None or min_v is None:
+        return None, None, None, None
+
+    try:
+        raw_max = ", ".join(ntc_names[i] for i in sorted(max_idxs))
+        raw_min = ", ".join(ntc_names[i] for i in sorted(min_idxs))
+        max_names = format_sensor_names(raw_max)
+        min_names = format_sensor_names(raw_min)
+    except (IndexError, KeyError):
+        return None, None, None, None
+
+    return max_v, max_names, min_v, min_names
 
 
 # =========================================================
@@ -111,7 +322,8 @@ def parse_trc(fp):
                     soc = raw * 0.01
                     soc_list.append((ts, soc))
 
-            # TEMP (NTC) (0x14E)
+            # TEMP (NTC) (0x14E) : (tmax, tmin) bytes
+            # NOTE: We keep this logic for Tavg exactly as you already compute it.
             m = RE_014E.match(line)
             if m:
                 ts = parse_ts(m.group(1))
@@ -368,7 +580,7 @@ def window_temp_avg(temp_samples, start_ts, end_ts):
 # =========================================================
 #  BUILD WINDOWS
 # =========================================================
-def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
+def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, therm_samples, fp):
 
     soc_list = sorted(soc_list, key=lambda x: x[0])
     odo_list = sorted(odo_list, key=lambda x: x[0])
@@ -378,7 +590,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
     if not soc_list:
         return [], 0.0, None, False, False
 
-    # Build valid temp samples
+    # Keep original Tavg computation (from 0x014E tmax/tmin)
     temp_samples = []
     zero_streak = 0
     streak_found = False
@@ -393,6 +605,13 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
             temp_samples.append((ts, (tmax + tmin) / 2.0))
         else:
             temp_samples.append((ts, (tmax + tmin) / 2.0))
+
+    ntc_names = build_ntc_names(68)
+
+    # Detect active NTCs once (optional filter). If empty -> we won't filter.
+    active_ntc = detect_active_ntc_from_therms(therm_samples, seconds=10)
+    if not active_ntc:
+        active_ntc = None  # fallback: consider any sensor present
 
     # UV timestamp
     uv_ts = None
@@ -438,7 +657,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
     for typ, block_start, block_end in session_blocks:
 
         # -----------------------------
-        # CHARGE BLOCK (NOW WITH Ah + Temp)
+        # CHARGE BLOCK (WITH Ah + Temp)
         # -----------------------------
         if typ == "charge":
             charge_soc_start = lookup_before(block_start, soc_list)
@@ -453,11 +672,19 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
                     dist = max(0.0, odo_end[1] - odo_start[1])
 
             cap_ah = integrate_window(current_list, block_start, block_end)
+
+            # Keep Tavg exactly as before:
             tavg, _ = window_temp_avg(temp_samples, block_start, block_end)
+
+            # NEW: compute min/max + signal name from per-sensor therms
+            tmax_v, tmax_sig, tmin_v, tmin_sig = window_minmax_from_therms(
+                therm_samples, block_start, block_end, ntc_names, active_ntc=active_ntc
+            )
 
             if charge_soc_start and charge_soc_end:
                 final_rows.append(
-                    ("charge", charge_soc_start[1], charge_soc_end[1], dist, cap_ah, tavg)
+                    ("charge", charge_soc_start[1], charge_soc_end[1], dist, cap_ah, tavg,
+                     tmax_v, tmax_sig, tmin_v, tmin_sig)
                 )
 
             # update baselines
@@ -522,10 +749,18 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
                     dist = 0.0
                 odo_baseline = odo_end[1]
 
+            # Keep Tavg exactly as before:
             tavg, _ = window_temp_avg(temp_samples, window_start_ts, window_end_ts)
+
+            # NEW min/max + signal:
+            tmax_v, tmax_sig, tmin_v, tmin_sig = window_minmax_from_therms(
+                therm_samples, window_start_ts, window_end_ts, ntc_names, active_ntc=active_ntc
+            )
+
             cap_ah = integrate_window(current_list, window_start_ts, window_end_ts)
 
-            final_rows.append(("normal", current_soc, next_soc, dist, cap_ah, tavg))
+            final_rows.append(("normal", current_soc, next_soc, dist, cap_ah, tavg,
+                               tmax_v, tmax_sig, tmin_v, tmin_sig))
             current_soc = next_soc
 
         # Last partial window
@@ -552,17 +787,26 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, fp):
                     dist = 0.0
                 odo_baseline = odo_end[1]
 
+            # Keep Tavg exactly as before:
             tavg, _ = window_temp_avg(temp_samples, window_start_ts, window_end_ts)
+
+            # NEW min/max + signal:
+            tmax_v, tmax_sig, tmin_v, tmin_sig = window_minmax_from_therms(
+                therm_samples, window_start_ts, window_end_ts, ntc_names, active_ntc=active_ntc
+            )
+
             cap_ah = integrate_window(current_list, window_start_ts, window_end_ts)
 
-            final_rows.append(("normal", current_soc, end_soc, dist, cap_ah, tavg))
+            final_rows.append(("normal", current_soc, end_soc, dist, cap_ah, tavg,
+                               tmax_v, tmax_sig, tmin_v, tmin_sig))
 
         soc_baseline = end_soc
 
         if uv_in_this_block:
             if final_rows:
-                last_typ, sv, ev, odo, cap, tavg = final_rows[-1]
-                final_rows[-1] = ("uv", sv, ev, odo, cap, tavg)
+                last = final_rows[-1]
+                # last tuple: (typ, sv, ev, odo, cap, tavg, tmax_v, tmax_sig, tmin_v, tmin_sig)
+                final_rows[-1] = ("uv",) + last[1:]
             break
 
     # ---------------------------------------------------------
@@ -605,14 +849,15 @@ def draw_table_png(
     low_soc_found=False,
 ):
 
-    cols = ["SoC Window", "Odo", "Cap Exchange", "Temp Avg"]
-    col_w = [0.45, 0.15, 0.2, 0.2]
+    cols = ["SoC Window", "Odo", "Cap Exchange", "Temp Avg", "Temp Signal"]
+    col_w = [0.32, 0.12, 0.18, 0.18, 0.2]
 
-    fig, ax = plt.subplots(figsize=(12, 0.6 + 0.4 * (len(rows) + 3)))
+    # a bit taller because Temp cell may have 3 lines
+    fig, ax = plt.subplots(figsize=(12, 0.7 + 0.45 * (len(rows) + 3)))
     ax.axis("off")
 
     header_h = 0.06
-    row_h = 0.06
+    row_h = 0.075  # bigger row height for multiline temp cell
 
     y = 1 - header_h
     x = 0
@@ -624,19 +869,26 @@ def draw_table_png(
 
     total_cap = 0.0
 
-    for typ, sv, ev, odo, cap, tavg in rows:
+    for typ, sv, ev, odo, cap, tavg, tmax_v, tmax_sig, tmin_v, tmin_sig in rows:
+
+        tv = f"{tavg:.1f} C" if tavg is not None else ""
+        t_signal_parts = []
+        if tmax_v is not None:
+            t_signal_parts.append(f"Max {tmax_v:.1f}C ({tmax_sig})")
+        if tmin_v is not None:
+            t_signal_parts.append(f"Min {tmin_v:.1f}C ({tmin_sig})")
+        t_signal = "\n".join(t_signal_parts)
 
         # Charge row shown in columns (yellow)
         if typ == "charge":
             sw = f"CHG: {sv:.2f}% to {ev:.2f}%"
             cd = f"{odo:.2f}"
             ce = f"{cap:.2f} Ah"
-            tv = f"{tavg:.1f} C" if tavg is not None else ""
 
             x = 0
-            for val, w in zip([sw, cd, ce, tv], col_w):
+            for val, w in zip([sw, cd, ce, tv, t_signal], col_w):
                 ax.add_patch(Rectangle((x, y), w, row_h, fc="#fce88c", ec="black"))
-                ax.text(x + w / 2, y + row_h / 2, val, ha="center", va="center")
+                ax.text(x + w / 2, y + row_h / 2, val, ha="center", va="center", fontsize=9)
                 x += w
 
             total_cap += cap
@@ -650,12 +902,11 @@ def draw_table_png(
 
         cd = f"{odo:.2f}"
         ce = f"{cap:.2f} Ah"
-        tv = f"{tavg:.1f} C" if tavg is not None else ""
 
         x = 0
-        for val, w in zip([sw, cd, ce, tv], col_w):
+        for val, w in zip([sw, cd, ce, tv, t_signal], col_w):
             ax.add_patch(Rectangle((x, y), w, row_h, fc="white", ec="black"))
-            ax.text(x + w / 2, y + row_h / 2, val, ha="center", va="center")
+            ax.text(x + w / 2, y + row_h / 2, val, ha="center", va="center", fontsize=9)
             x += w
 
         total_cap += cap
@@ -709,15 +960,10 @@ def draw_table_png(
         va="center",
     )
 
-    ax.add_patch(
-        Rectangle(
-            (col_w[0] + col_w[1] + col_w[2], y),
-            col_w[3],
-            row_h,
-            fc="#a0d0ff",
-            ec="black",
-        )
-    )
+    x = col_w[0] + col_w[1] + col_w[2]
+    for w in col_w[3:]:
+        ax.add_patch(Rectangle((x, y), w, row_h, fc="white", ec="black"))
+        x += w
 
     plt.tight_layout()
     plt.savefig(output, dpi=150, bbox_inches="tight")
@@ -743,13 +989,16 @@ def main():
 
     soc_list, current_list, odo_list, ntc_list, uv_list = parse_trc(trc)
 
+    # NEW: parse per-sensor therm signals (for min/max + signal name in table only)
+    therm_samples = parse_thermistor_frames(trc)
+
     (
         rows,
         total_range,
         dist_after_low_soc,
         uv_detected,
         low_soc_found,
-    ) = build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, trc)
+    ) = build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, therm_samples, trc)
 
     out = Path(__file__).resolve().parent
 
