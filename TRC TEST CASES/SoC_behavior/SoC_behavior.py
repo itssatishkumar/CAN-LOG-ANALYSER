@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -6,6 +6,13 @@ import re
 from datetime import datetime
 import matplotlib.ticker as ticker
 import json
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+from trc_utils import fast_parse_ts, progress_by_bytes
+
+PROGRESS_STEP = 0.5  # percent granularity for live progress
 
 # -----------------------------------------------------
 # GET TRC FROM MAIN GUI ARGUMENT
@@ -22,6 +29,7 @@ if not os.path.exists(trc_path):
 
 folder = os.path.dirname(os.path.abspath(__file__))
 print(f"Using TRC file from GUI: {trc_path}")
+emit_progress = progress_by_bytes(trc_path, step=PROGRESS_STEP)
 
 # -----------------------------------------------------
 # TRC regex
@@ -44,7 +52,8 @@ full_ts_list = []
 # PARSE TRC
 # -----------------------------------------------------
 with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
-    for line in f:
+    for line_idx, line in enumerate(f, 1):
+        emit_progress(len(line))
         m = pattern.match(line)
         if not m:
             continue
@@ -52,7 +61,6 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         date_str = m.group(1)
         time_str = m.group(2)
         ms_str = m.group(3)
-        ms_norm = ms_str if len(ms_str) == 4 else ms_str + "0" if len(ms_str) == 3 else ms_str
         can_id = int(m.group(4), 16)
         dlc = int(m.group(5))
         data_str = m.group(6).strip()
@@ -60,9 +68,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         if can_id != SOC_ID:
             continue
 
-        ts_str = f"{date_str} {time_str}.{ms_norm}"
-        dt = datetime.strptime(ts_str, "%d-%m-%Y %H:%M:%S.%f")
-        ts_ms = dt.timestamp() * 1000.0
+        dt, ts_ms, ts_str = fast_parse_ts(date_str, time_str, ms_str)
 
         bytes_hex = data_str.split()
         if len(bytes_hex) < dlc:
@@ -72,9 +78,6 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
 
         raw_soc = (data[1] << 8) | data[0]
         soc = raw_soc * 0.01
-        if soc < 1:
-            continue
-
         bms_state = data[4]
         if bms_state == 0:
             continue
@@ -214,4 +217,5 @@ plt.savefig(plot_path, dpi=200)
 plt.close()
 
 print(f"SoC plot saved: {plot_path}")
+print("PROGRESS 100.0", flush=True)
 print("\nDONE :)")

@@ -21,6 +21,10 @@ import sys
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog
+BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+from trc_utils import progress_by_bytes
 
 import matplotlib
 
@@ -31,6 +35,7 @@ import matplotlib.pyplot as plt
 RESULT_FILE = "Equivalent_cycle_count_results.json"
 SUMMARY_FILE = "Equivalent_cycle_count_summary.json"
 PLOT_FILE = "Equivalent_cycle_count_plot.png"
+PROGRESS_STEP = 0.5  # percent granularity for live progress
 
 
 class CycleCounter:
@@ -76,7 +81,7 @@ class CycleCounter:
         return self.last_valid
 
 
-def parse_trc_cycles(trc_path: str):
+def parse_trc_cycles(trc_path: str, progress_cb=None):
     """
     Parse TRC file for CAN ID 0x012B and extract raw cycle counts (last two bytes, little-endian).
     Returns a list of integers in the order they appear.
@@ -88,7 +93,9 @@ def parse_trc_cycles(trc_path: str):
     cycles = []
 
     with open(trc_path, "r", errors="ignore") as f:
-        for line in f:
+        for line_idx, line in enumerate(f, 1):
+            if progress_cb:
+                progress_cb(len(line))
             match = pattern_012b.match(line)
             if not match:
                 continue
@@ -210,7 +217,9 @@ def main():
         if not os.path.exists(trc_path):
             print(f"ERROR: TRC file not found: {trc_path}")
             sys.exit(1)
-        raw_cycles = parse_trc_cycles(trc_path)
+        progress_cb = progress_by_bytes(trc_path, step=PROGRESS_STEP)
+
+        raw_cycles = parse_trc_cycles(trc_path, progress_cb=progress_cb)
         if not raw_cycles:
             print("ERROR: No 0x012B frames found in TRC.")
             sys.exit(1)
@@ -232,6 +241,7 @@ def main():
     }
     print(f"Done. Summary: {summary}")
     print(f"Outputs: {RESULT_FILE}, {SUMMARY_FILE}, {PLOT_FILE}")
+    print("PROGRESS 100.0", flush=True)
 
 
 if __name__ == "__main__":

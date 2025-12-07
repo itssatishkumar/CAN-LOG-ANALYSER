@@ -7,13 +7,20 @@ from tkinter import filedialog
 from datetime import datetime
 import json
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+from trc_utils import fast_datetime_from_str, progress_by_bytes
+
 import matplotlib
 
 matplotlib.use("Agg")  # non-GUI backend
 import matplotlib.pyplot as plt
 
+PROGRESS_STEP = 0.5  # percent granularity for live progress
 
-def parse_trc_for_110(filepath):
+
+def parse_trc_for_110(filepath, progress_cb=None):
     pattern = re.compile(
         r"\s*\d+\)\s+([\d\-\s:\.]+)\s+(Rx|Tx)\s+0110\s+8\s+(.+)"
     )
@@ -39,13 +46,12 @@ def parse_trc_for_110(filepath):
             elif len(ms) > 4:
                 ts_clean = f"{base}.{ms[:4]}"
 
-        try:
-            return datetime.strptime(ts_clean, "%d-%m-%Y %H:%M:%S.%f")
-        except ValueError:
-            return None
+        return fast_datetime_from_str(ts_clean)
 
     with open(filepath, "r") as f:
-        for line in f:
+        for idx, line in enumerate(f, 1):
+            if progress_cb:
+                progress_cb(len(line))
             match = pattern.match(line)
             if match:
                 data_str = match.group(3).strip().split()
@@ -84,7 +90,9 @@ def main():
         print("No file selected.")
         return
 
-    timestamps, currents = parse_trc_for_110(trc_path)
+    progress_cb = progress_by_bytes(trc_path, step=PROGRESS_STEP)
+
+    timestamps, currents = parse_trc_for_110(trc_path, progress_cb=progress_cb)
 
     if not currents:
         print("No 0x110 frames found.")
@@ -204,6 +212,7 @@ def main():
         except Exception:
             pass
 
+    print("PROGRESS 100.0", flush=True)
 
 
 if __name__ == "__main__":

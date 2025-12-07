@@ -4,6 +4,7 @@ import subprocess
 import json
 import csv
 import math
+import time
 from typing import Dict, Optional, Set
 
 from PySide6.QtWidgets import (
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QTableWidget, QTableWidgetItem, QFrame, QDialog,
     QTextEdit, QHeaderView, QAbstractItemView
 )
-from PySide6.QtGui import QFont, QPixmap, QColor, QLinearGradient, QBrush
+from PySide6.QtGui import QFont, QPixmap, QColor, QLinearGradient, QBrush, QPalette
 from PySide6.QtCore import Qt, QThread, Signal, QProcess, QTimer
 from updater import check_for_update
 
@@ -26,7 +27,7 @@ TEST_CASES = [
     "ANY BMS ERROR", "FLAG FULL CHARGE DISABLE", "DCLI / DCLO MAP",
     "EQUIVALENT CYCLE COUNT", "BMS BALANCING",
     "PRIMARY VS SECONDARY LATCH", "MCU OBC ERROR", "AuxCharge_with_Vehicle_state_change",
-    "SoC vs VOLTAGE SUMMARY", "CAPACITY CHECK", "BMS CURRENT IN READY MODE", "DRIVE_CHARGE Max Min Avg CURRENT"
+    "SoC vs VOLTAGE SUMMARY", "CAPACITY + SoC vs RANGE CHECK", "BMS CURRENT IN READY MODE", "DRIVE_CHARGE Max Min Avg CURRENT"
 ]
 
 FW_CHECKER = "FW_Config_checker.py"
@@ -158,6 +159,74 @@ class FWCheckerThread(QThread):
             self.finished_err.emit(str(e))
 
 # -------------------------------------------------------
+# VCU RESET THREAD
+# -------------------------------------------------------
+class VCUResetThread(QThread):
+    finished_ok = Signal(dict)
+    finished_err = Signal(str)
+
+    def __init__(self, trc_file: str, script_path: str, output_path: str):
+        super().__init__()
+        self.trc_file = trc_file
+        self.script_path = script_path
+        self.output_path = output_path
+
+    def run(self):
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, self.script_path, self.trc_file, self.output_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=os.path.dirname(self.script_path),
+            )
+            out, err = proc.communicate()
+
+            if proc.returncode != 0:
+                self.finished_err.emit(err or out or "VCU reset script failed")
+                return
+
+            with open(self.output_path, "r", encoding="utf-8", errors="ignore") as f:
+                data = json.load(f)
+            self.finished_ok.emit(data)
+
+        except Exception as e:
+            self.finished_err.emit(str(e))
+
+
+class BMSResetThread(QThread):
+    finished_ok = Signal(dict)
+    finished_err = Signal(str)
+
+    def __init__(self, trc_file: str, script_path: str, output_path: str):
+        super().__init__()
+        self.trc_file = trc_file
+        self.script_path = script_path
+        self.output_path = output_path
+
+    def run(self):
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, self.script_path, self.trc_file, self.output_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=os.path.dirname(self.script_path),
+            )
+            out, err = proc.communicate()
+
+            if proc.returncode != 0:
+                self.finished_err.emit(err or out or "BMS reset script failed")
+                return
+
+            with open(self.output_path, "r", encoding="utf-8", errors="ignore") as f:
+                data = json.load(f)
+            self.finished_ok.emit(data)
+
+        except Exception as e:
+            self.finished_err.emit(str(e))
+
+# -------------------------------------------------------
 # MAIN GUI
 # -------------------------------------------------------
 class CANLogDebugger(QWidget):
@@ -173,8 +242,15 @@ class CANLogDebugger(QWidget):
             ".csv": os.path.join(self.script_dir, "CSV TEST CASES"),
         }
         self.tests_folder = self._tests_folder_for_extension(".trc")
+        self.vcu_reset_script = os.path.join(self.script_dir, "TRC TEST CASES", "ECU RESET", "VCU_Reset.py")
+        self.vcu_reset_output = os.path.join(self.script_dir, "TRC TEST CASES", "ECU RESET", "VCU_Reset_Result.json")
+        self.bms_reset_script = os.path.join(self.script_dir, "TRC TEST CASES", "ECU RESET", "BMS_Reset.py")
+        self.bms_reset_output = os.path.join(self.script_dir, "TRC TEST CASES", "ECU RESET", "BMS_Reset_Result.json")
+        self.scan_tasks = 0
         self.processes: Dict[int, QProcess] = {}
         self.running_rows: Set[int] = set()
+        self.running_started_at: Dict[int, float] = {}
+        self.running_pct: Dict[int, float] = {}
         self.output_files = self._load_output_config()
         self.pending_result_rows: Set[int] = set()
         self.result_refresh_timer = QTimer(self)
@@ -182,11 +258,26 @@ class CANLogDebugger(QWidget):
         self.result_refresh_timer.timeout.connect(self._refresh_pending_results)
 
         # ---------------- TITLE ----------------
+        self.version_label = QLabel(self._read_version_text())
+        self.version_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        self.version_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.version_label.setStyleSheet("color:white; padding:0 12px; background:transparent;")
+        self.version_label.setToolTip("Read from version.txt")
+
         title = QLabel("CAN LOG ANALYSER")
         title.setFont(QFont("Segoe UI", 20, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("background:#0033CC; color:#00FFFF; padding:10px;")
-        self._init_title_animation(title)
+        title.setStyleSheet("color:#00FFFF; padding:10px; font-weight:bold; background:transparent;")
+
+        title_bar = QFrame()
+        title_bar_layout = QHBoxLayout()
+        title_bar_layout.setContentsMargins(10, 6, 10, 6)
+        title_bar_layout.setSpacing(10)
+        title_bar_layout.addWidget(self.version_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        title_bar_layout.addWidget(title, 1, Qt.AlignCenter)
+        title_bar.setLayout(title_bar_layout)
+
+        self._init_title_animation(title, title_bar)
 
         # ---------------------------------------------------
         # LEFT PANEL
@@ -235,6 +326,7 @@ class CANLogDebugger(QWidget):
         (self.lb_stark_fw, self.tx_stark_fw) = fw_field("STARK FIRMWARE")
         (self.lb_stark_cfg, self.tx_stark_cfg) = fw_field("STARK CONFIG")
         (self.lb_xavier_fw, self.tx_xavier_fw) = fw_field("XAVIER FIRMWARE")
+        (self.lb_distance, self.tx_distance) = fw_field("DISTANCE COVERED")
 
         bms_labels = [
             self.lb_hw,
@@ -250,6 +342,7 @@ class CANLogDebugger(QWidget):
             style_label(lbl, "#2CBDF2")
 
         style_label(self.lb_xavier_fw, "#1FA37A")
+        style_label(self.lb_distance, "#1FA37A")
 
         grid = QGridLayout()
         grid.setSpacing(8)
@@ -264,6 +357,7 @@ class CANLogDebugger(QWidget):
             (self.lb_stark_fw, self.tx_stark_fw),
             (self.lb_stark_cfg, self.tx_stark_cfg),
             (self.lb_xavier_fw, self.tx_xavier_fw),
+            (self.lb_distance, self.tx_distance),
         ]
 
         for r, (l, t) in enumerate(fw_rows):
@@ -279,19 +373,36 @@ class CANLogDebugger(QWidget):
         # ---------------------------------------------------
         # EXTRA CHECK BUTTONS
         # ---------------------------------------------------
-        self.btn_vcu = QPushButton("Check VCU unexpected Reset")
+        self.btn_vcu = QPushButton("VCU unexpected Reset")
         self.tx_vcu_value = QLineEdit("0")
-        self.tx_vcu_result = QLineEdit("PASS/FAIL")
+        self.tx_vcu_result = QLineEdit("N/A")
 
-        self.btn_bms = QPushButton("Check BMS unexpected Reset")
+        self.btn_bms = QPushButton("MARVEL BMS unexpected Reset")
         self.tx_bms_value = QLineEdit("0")
-        self.tx_bms_result = QLineEdit("PASS/FAIL")
+        self.tx_bms_result = QLineEdit("N/A")
 
         for t in [self.tx_vcu_value, self.tx_vcu_result, self.tx_bms_value, self.tx_bms_result]:
             t.setReadOnly(True)
 
-        self.btn_vcu.clicked.connect(self.check_vcu)
-        self.btn_bms.clicked.connect(self.check_bms)
+        # Store default palettes so we can restore styles cleanly
+        self.vcu_value_palette_default = self.tx_vcu_value.palette()
+        self.vcu_result_palette_default = self.tx_vcu_result.palette()
+        self.bms_value_palette_default = self.tx_bms_value.palette()
+        self.bms_result_palette_default = self.tx_bms_result.palette()
+
+        # Auto-driven; disable manual clicks
+        self.btn_vcu.setEnabled(False)
+        self.btn_bms.setEnabled(False)
+        green_btn_style = (
+            "QPushButton { background:#28A745; color:white; font-weight:bold;"
+            "border:1px solid #1f7a33; border-radius:4px; padding:6px; }"
+            "QPushButton:disabled { background:#28A745; color:white;"
+            "border:1px solid #1f7a33; }"
+        )
+        self.btn_vcu.setStyleSheet(green_btn_style)
+        self.btn_bms.setStyleSheet(green_btn_style)
+        self.btn_vcu.setFocusPolicy(Qt.NoFocus)
+        self.btn_bms.setFocusPolicy(Qt.NoFocus)
 
         extra_grid = QGridLayout()
         extra_grid.addWidget(self.btn_vcu, 0, 0)
@@ -399,7 +510,7 @@ class CANLogDebugger(QWidget):
         main.addWidget(right_frame, 1)
 
         final = QVBoxLayout()
-        final.addWidget(title)
+        final.addWidget(title_bar)
         final.addLayout(main)
 
         self.setLayout(final)
@@ -407,13 +518,28 @@ class CANLogDebugger(QWidget):
     # ======================================================
     # UTILS: CELL STYLING & SCRIPT PATHS
     # ======================================================
-    def _init_title_animation(self, label: QLabel):
+    def _read_version_text(self) -> str:
+        version_file = os.path.join(self.script_dir, "version.txt")
+        try:
+            with open(version_file, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+        except FileNotFoundError:
+            raw = ""
+        except Exception:
+            raw = ""
+
+        raw = raw.lstrip("vV")
+        return f"v{raw or '0.0.0'}"
+
+    def _init_title_animation(self, label: QLabel, container: Optional[QFrame] = None):
         """Animate title with a moving glow effect."""
         self.title_label = label
+        self.title_container = container
         self.title_anim_step = 0
         self.title_anim_timer = QTimer(self)
         self.title_anim_timer.timeout.connect(self._update_title_glow)
         self.title_anim_timer.start(120)
+        self._update_title_glow()
 
     def _update_title_glow(self):
         if not getattr(self, "title_label", None):
@@ -422,13 +548,26 @@ class CANLogDebugger(QWidget):
         highlight = self.title_anim_step / 100.0
         start = max(0.0, highlight - 0.2)
         end = min(1.0, highlight + 0.2)
+        gradient = (
+            "qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
+            f"stop:0 #001F6B, stop:{start:.2f} #0033CC, stop:{highlight:.2f} #4DE8FF, "
+            f"stop:{end:.2f} #0033CC, stop:1 #001F6B)"
+        )
         style = (
             "color:#00FFFF; padding:10px; font-weight:bold;"
-            "background:qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
-            f"stop:0 #001F6B, stop:{start:.2f} #0033CC, stop:{highlight:.2f} #4DE8FF, "
-            f"stop:{end:.2f} #0033CC, stop:1 #001F6B);"
+            f"background:{gradient};"
         )
-        self.title_label.setStyleSheet(style)
+        if getattr(self, "title_container", None):
+            self.title_container.setStyleSheet(f"background:{gradient}; border:0px;")
+            self.title_label.setStyleSheet(
+                "color:#00FFFF; padding:10px; font-weight:bold; background:transparent;"
+            )
+            if getattr(self, "version_label", None):
+                self.version_label.setStyleSheet(
+                    "color:white; padding:0 12px; font-weight:bold; background:transparent;"
+                )
+        else:
+            self.title_label.setStyleSheet(style)
 
         # Mirror the running glow on the log organiser button while active
         if getattr(self, "make_btn_animating", False) and getattr(self, "make_btn", None):
@@ -470,6 +609,8 @@ class CANLogDebugger(QWidget):
 
     def _mark_row_running(self, row: int):
         """Set status cell to Running with static styling."""
+        self.running_rows.add(row)
+        self.running_started_at[row] = time.time()
         self._set_colored_cell(row, 1, "Running", "#00138B")  # static blue
 
     def _blend_colors(self, c1: QColor, c2: QColor, t: float) -> QColor:
@@ -484,7 +625,11 @@ class CANLogDebugger(QWidget):
         item = self.test_table.item(row, 1)
         if not item:
             return
-        item.setText("Running")
+        pct = self.running_pct.get(row)
+        if pct is not None:
+            item.setText(f"Running {pct:.1f}%")
+        else:
+            item.setText("Running")
         base = QColor("#00124F")
         shine = QColor("#4DE8FF")
         pos = phase % 1.0
@@ -661,6 +806,14 @@ class CANLogDebugger(QWidget):
     # ======================================================
     # FILE BROWSE
     # ======================================================
+    def _register_scan_task(self):
+        self.scan_tasks += 1
+
+    def _on_scan_finished(self):
+        self.scan_tasks = max(0, self.scan_tasks - 1)
+        if self.scan_tasks == 0:
+            self.restore_browse_button()
+
     def on_browse(self):
         ft = self.ft_combo.currentText()
         path, _ = QFileDialog.getOpenFileName(self, "Select File", "", f"{ft} Files (*{ft})")
@@ -675,17 +828,94 @@ class CANLogDebugger(QWidget):
         self.file_box.setText(path)
         self.run_all_btn.setEnabled(True)
 
+        self.scan_tasks = 0
         self.browse_btn.setEnabled(False)
         self.browse_btn.setText("Scanning...")
 
+        self._start_fw_scan(path)
+
+        if file_ext == ".trc":
+            self._start_vcu_reset_check(path, track_scan=True)
+            self._start_bms_reset_check(path, track_scan=True)
+        else:
+            self.reset_vcu_fields()
+            self.reset_bms_fields()
+
+    def _start_fw_scan(self, path: str):
         thread = FWCheckerThread(path)
         self.fw_thread = thread
+        self._register_scan_task()
         thread.finished_ok.connect(self.update_fw_info)
         thread.finished_err.connect(self.on_fw_error)
-        thread.finished.connect(self.restore_browse_button)
+        thread.finished.connect(self._on_scan_finished)
         thread.start()
 
+    def _start_vcu_reset_check(self, path: str, track_scan: bool):
+        if not os.path.exists(self.vcu_reset_script):
+            self.reset_vcu_fields()
+            QMessageBox.warning(self, "Error", f"VCU reset script not found:\n{self.vcu_reset_script}")
+            return
+
+        self.btn_vcu.setEnabled(False)
+        self.tx_vcu_value.setText("Count : ...")
+        self.tx_vcu_result.setText("...")
+        self._style_vcu_fields(None)
+
+        thread = VCUResetThread(path, self.vcu_reset_script, self.vcu_reset_output)
+        if track_scan:
+            self._register_scan_task()
+        thread.finished_ok.connect(self.update_vcu_reset_fields)
+        thread.finished_err.connect(self.on_vcu_reset_error)
+        thread.finished.connect(lambda: self._on_vcu_reset_finished(track_scan))
+        thread.start()
+        self.vcu_thread = thread
+
+    def _on_vcu_reset_finished(self, track_scan: bool):
+        self.btn_vcu.setEnabled(False)
+        if track_scan:
+            self._on_scan_finished()
+
+    def _start_bms_reset_check(self, path: str, track_scan: bool, manual: bool = False):
+        if not path:
+            if manual:
+                QMessageBox.warning(self, "Error", "No file loaded!")
+            self.reset_bms_fields()
+            return
+
+        if not os.path.exists(self.bms_reset_script):
+            self.reset_bms_fields()
+            QMessageBox.warning(self, "Error", f"BMS reset script not found:\n{self.bms_reset_script}")
+            return
+
+        ext = os.path.splitext(path)[1].lower()
+        if ext != ".trc":
+            self.reset_bms_fields()
+            if manual:
+                QMessageBox.warning(self, "Error", "BMS reset check only runs on .trc files.")
+            return
+
+        self.btn_bms.setEnabled(False)
+        self.tx_bms_value.setText("Count : ...")
+        self.tx_bms_result.setText("...")
+        self._style_bms_fields(None)
+
+        thread = BMSResetThread(path, self.bms_reset_script, self.bms_reset_output)
+        if track_scan:
+            self._register_scan_task()
+        thread.finished_ok.connect(self.update_bms_reset_fields)
+        thread.finished_err.connect(self.on_bms_reset_error)
+        thread.finished.connect(lambda: self._on_bms_reset_finished(track_scan))
+        thread.start()
+        self.bms_thread = thread
+
+    def _on_bms_reset_finished(self, track_scan: bool):
+        self.btn_bms.setEnabled(False)
+        if track_scan:
+            self._on_scan_finished()
+
     def restore_browse_button(self):
+        if getattr(self, "scan_tasks", 0) > 0:
+            return
         self.browse_btn.setEnabled(True)
         self.browse_btn.setText("Browse File")
 
@@ -698,6 +928,118 @@ class CANLogDebugger(QWidget):
         self.tx_stark_fw.setText(info.get("STARK_FIRMWARE", ""))
         self.tx_stark_cfg.setText(info.get("STARK_CONFIG", ""))
         self.tx_xavier_fw.setText(info.get("XAVIER_FIRMWARE", ""))
+
+        def _fmt_dist(val):
+            if val is None:
+                return ""
+            try:
+                return f"{float(val):.1f} km"
+            except Exception:
+                return f"{val} km" if val else ""
+
+        # Prefer new keyed distance; fallback if older key used
+        dist_val = info.get("DISTANCE_COVERED_KM", info.get("DISTANCE_COVERED", ""))
+        self.tx_distance.setText(_fmt_dist(dist_val))
+
+    def update_vcu_reset_fields(self, data: dict):
+        count = data.get("Reset_Count", 0)
+        result_raw = str(data.get("Result", "")).strip().upper()
+        result = result_raw or ("PASS" if count == 0 else "FAIL")
+        tooltip = f"Read from {self.vcu_reset_output}"
+        self.tx_vcu_value.setToolTip(tooltip)
+        self.tx_vcu_result.setToolTip(tooltip)
+        self.tx_vcu_value.setText(f"Count : {count}")
+        self.tx_vcu_result.setText(result)
+        self.tx_vcu_value.setAlignment(Qt.AlignCenter)
+        self.tx_vcu_result.setAlignment(Qt.AlignCenter)
+        self._style_vcu_fields(result)
+
+    def on_vcu_reset_error(self, msg: str):
+        self.reset_vcu_fields()
+        QMessageBox.warning(self, "VCU Reset Error", msg)
+
+    def update_bms_reset_fields(self, data: dict):
+        count = data.get("Reset_Count", 0)
+        result_raw = str(data.get("Result", "")).strip().upper()
+        result = result_raw or ("PASS" if count == 0 else "FAIL")
+        tooltip = f"Read from {self.bms_reset_output}"
+        self.tx_bms_value.setToolTip(tooltip)
+        self.tx_bms_result.setToolTip(tooltip)
+        self.tx_bms_value.setText(f"Count : {count}")
+        self.tx_bms_result.setText(result)
+        self.tx_bms_value.setAlignment(Qt.AlignCenter)
+        self.tx_bms_result.setAlignment(Qt.AlignCenter)
+        self._style_bms_fields(result)
+
+    def on_bms_reset_error(self, msg: str):
+        self.reset_bms_fields()
+        QMessageBox.warning(self, "BMS Reset Error", msg)
+
+    def reset_vcu_fields(self):
+        self.tx_vcu_value.setText("Count : N/A")
+        self.tx_vcu_result.setText("N/A")
+        self.tx_vcu_value.setToolTip("")
+        self.tx_vcu_result.setToolTip("")
+        self.tx_vcu_value.setAlignment(Qt.AlignCenter)
+        self.tx_vcu_result.setAlignment(Qt.AlignCenter)
+        self._style_vcu_fields(None)
+
+    def reset_bms_fields(self):
+        self.tx_bms_value.setText("Count : N/A")
+        self.tx_bms_result.setText("N/A")
+        self.tx_bms_value.setToolTip("")
+        self.tx_bms_result.setToolTip("")
+        self.tx_bms_value.setAlignment(Qt.AlignCenter)
+        self.tx_bms_result.setAlignment(Qt.AlignCenter)
+        self._style_bms_fields(None)
+
+    def _style_vcu_fields(self, result: Optional[str]):
+        def apply_style(widget: QLineEdit, default_palette: QPalette, bg: str, fg: str):
+            if not bg:
+                widget.setPalette(default_palette)
+                widget.setStyleSheet("")
+                widget.setAlignment(Qt.AlignCenter)
+                return
+            pal = QPalette(default_palette)
+            pal.setColor(QPalette.Base, QColor(bg))
+            pal.setColor(QPalette.Text, QColor(fg))
+            widget.setPalette(pal)
+            widget.setStyleSheet(f"QLineEdit {{ background:{bg}; color:{fg}; font-weight:bold; }}")
+            widget.setAlignment(Qt.AlignCenter)
+
+        if result == "PASS":
+            bg, fg = "#28A745", "white"
+        elif result == "FAIL":
+            bg, fg = "#FF0000", "white"
+        else:
+            bg, fg = "", ""
+
+        apply_style(self.tx_vcu_value, self.vcu_value_palette_default, bg, fg)
+        apply_style(self.tx_vcu_result, self.vcu_result_palette_default, bg, fg)
+
+    def _style_bms_fields(self, result: Optional[str]):
+        def apply_style(widget: QLineEdit, default_palette: QPalette, bg: str, fg: str):
+            if not bg:
+                widget.setPalette(default_palette)
+                widget.setStyleSheet("")
+                widget.setAlignment(Qt.AlignCenter)
+                return
+            pal = QPalette(default_palette)
+            pal.setColor(QPalette.Base, QColor(bg))
+            pal.setColor(QPalette.Text, QColor(fg))
+            widget.setPalette(pal)
+            widget.setStyleSheet(f"QLineEdit {{ background:{bg}; color:{fg}; font-weight:bold; }}")
+            widget.setAlignment(Qt.AlignCenter)
+
+        if result == "PASS":
+            bg, fg = "#28A745", "white"
+        elif result == "FAIL":
+            bg, fg = "#FF0000", "white"
+        else:
+            bg, fg = "", ""
+
+        apply_style(self.tx_bms_value, self.bms_value_palette_default, bg, fg)
+        apply_style(self.tx_bms_result, self.bms_result_palette_default, bg, fg)
 
     def on_fw_error(self, err):
         QMessageBox.warning(self, "FW Error", err)
@@ -734,6 +1076,8 @@ class CANLogDebugger(QWidget):
         self.processes.clear()
         python = sys.executable
         self.running_rows.clear()
+        self.running_started_at.clear()
+        self.running_pct.clear()
 
         for row, script in SCRIPT_BY_ROW.items():
             folder_path, script_path = self._get_test_script_paths(row)
@@ -755,6 +1099,7 @@ class CANLogDebugger(QWidget):
             # Capture row in lambda default
             proc.finished.connect(lambda exitCode, _status, r=row: self.on_test_finished(r, exitCode))
             proc.errorOccurred.connect(lambda _e, r=row: self.on_test_error(r))
+            proc.readyReadStandardOutput.connect(lambda r=row: self._on_test_stdout(r))
 
             proc.start(python, [script, self.selected_file_path])
             self.processes[row] = proc
@@ -768,6 +1113,8 @@ class CANLogDebugger(QWidget):
 
     def on_test_finished(self, row, exitCode):
         self.running_rows.discard(row)
+        self.running_started_at.pop(row, None)
+        self.running_pct.pop(row, None)
         if exitCode == 0:
             # Completed OK
             self._set_colored_cell(row, 1, "Completed", "#28A745")
@@ -784,8 +1131,41 @@ class CANLogDebugger(QWidget):
 
     def on_test_error(self, row, _):
         self.running_rows.discard(row)
+        self.running_started_at.pop(row, None)
+        self.running_pct.pop(row, None)
         self._set_colored_cell(row, 1, "Missing/Incorrect", "#FF0000")
         self._maybe_finish_run_all()
+
+    def _on_test_stdout(self, row: int):
+        """Handle stdout from a running test process to update live progress."""
+        proc = self.processes.get(row)
+        if not proc:
+            return
+        try:
+            data = proc.readAllStandardOutput().data().decode("utf-8", errors="ignore")
+        except Exception:
+            return
+
+        updated = False
+        for line in data.splitlines():
+            if not line.startswith("PROGRESS"):
+                continue
+            parts = line.strip().split()
+            if len(parts) < 2:
+                continue
+            try:
+                pct = float(parts[1])
+            except Exception:
+                continue
+            pct = max(0.0, min(99.9, pct))
+            prev = self.running_pct.get(row, 0.0)
+            if pct >= prev:
+                self.running_pct[row] = pct
+                updated = True
+
+        if updated:
+            # Apply immediate text refresh; background animation updates on its own timer
+            self._set_running_visual(row, getattr(self, "title_anim_step", 0) / 100.0)
 
     def _mark_result_missing(self, row: int, reason: Optional[str] = None):
         # Give one last chance in case the JSON appeared after the retries elapsed.
@@ -933,14 +1313,21 @@ class CANLogDebugger(QWidget):
         return total
 
     def check_vcu(self):
-        cnt = self._count_keyword(["vcu unexpected reset", "vcu reset"])
-        self.tx_vcu_value.setText(str(cnt))
-        self.tx_vcu_result.setText("PASS" if cnt == 0 else "FAIL")
+        if not self.selected_file_path:
+            QMessageBox.warning(self, "Error", "No file loaded!")
+            return
+        file_ext = os.path.splitext(self.selected_file_path)[1].lower()
+        if file_ext != ".trc":
+            QMessageBox.warning(self, "Error", "VCU reset check only runs on .trc files.")
+            self.reset_vcu_fields()
+            return
+        self._start_vcu_reset_check(self.selected_file_path, track_scan=False)
 
     def check_bms(self):
-        cnt = self._count_keyword(["bms unexpected reset", "bms reset"])
-        self.tx_bms_value.setText(str(cnt))
-        self.tx_bms_result.setText("PASS" if cnt == 0 else "FAIL")
+        self._run_bms_reset_check(manual=True)
+
+    def _run_bms_reset_check(self, manual: bool = False):
+        self._start_bms_reset_check(self.selected_file_path, track_scan=False, manual=manual)
 
     # ======================================================
     # GENERATE TRACKER
@@ -964,6 +1351,7 @@ class CANLogDebugger(QWidget):
                 writer.writerow(["STARK FIRMWARE", self.tx_stark_fw.text()])
                 writer.writerow(["STARK CONFIG", self.tx_stark_cfg.text()])
                 writer.writerow(["XAVIER FIRMWARE", self.tx_xavier_fw.text()])
+                writer.writerow(["Distance Covered", self.tx_distance.text()])
 
                 writer.writerow(["VCU Reset Count", self.tx_vcu_value.text()])
                 writer.writerow(["VCU Reset Result", self.tx_vcu_result.text()])

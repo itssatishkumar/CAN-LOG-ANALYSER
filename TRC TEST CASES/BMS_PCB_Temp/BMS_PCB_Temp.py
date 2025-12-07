@@ -6,6 +6,13 @@ import re
 from datetime import datetime
 import json
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+from trc_utils import fast_parse_ts, progress_by_bytes
+
+PROGRESS_STEP = 0.5  # percent granularity for live progress
+
 # -----------------------------------------------------
 # CAN IDs and internal thermistor byte mapping
 # -----------------------------------------------------
@@ -36,6 +43,7 @@ if not os.path.exists(trc_path):
 
 folder = os.path.dirname(os.path.abspath(__file__))
 print(f"Using TRC file: {trc_path}")
+emit_progress = progress_by_bytes(trc_path, step=PROGRESS_STEP)
 
 # -----------------------------------------------------
 # TRC REGEX
@@ -68,7 +76,9 @@ reported_int_delta = None
 # PARSE TRC
 # -----------------------------------------------------
 with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
-    for line in f:
+    for line_idx, line in enumerate(f, 1):
+
+        emit_progress(len(line))
 
         m = pattern.match(line)
         if not m:
@@ -77,7 +87,6 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         date_str = m.group(1)
         time_str = m.group(2)
         ms_str   = m.group(3)
-        ms_norm = ms_str if len(ms_str) == 4 else ms_str + "0" if len(ms_str) == 3 else ms_str
         can_id   = int(m.group(4), 16)
         dlc      = int(m.group(5))
         data_str = m.group(6).strip()
@@ -88,9 +97,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
 
         data = [int(b, 16) for b in bytes_hex[:dlc]]
 
-        ts_string = f"{date_str} {time_str}.{ms_norm}"
-        dt = datetime.strptime(ts_string, "%d-%m-%Y %H:%M:%S.%f")
-        ts_ms = dt.timestamp() * 1000.0
+        dt, ts_ms, ts_string = fast_parse_ts(date_str, time_str, ms_str)
 
         if first_ts is None:
             first_ts = ts_ms
@@ -374,4 +381,5 @@ plt.savefig(plot_path, dpi=200, bbox_inches="tight")
 plt.close()
 
 print(f"Saved: {plot_path}")
+print("PROGRESS 100.0", flush=True)
 print("PCB Internal Temperature Imbalance Analysis DONE :)")

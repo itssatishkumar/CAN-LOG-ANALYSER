@@ -6,6 +6,13 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import textwrap
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+from trc_utils import progress_by_bytes
+
+PROGRESS_STEP = 0.5  # percent granularity for live progress
+
 # -------------------------------------------------------
 # CONFIG
 # -------------------------------------------------------
@@ -29,7 +36,7 @@ class Frame:
 # -------------------------------------------------------
 # TRC PARSER
 # -------------------------------------------------------
-def parse_trc(filepath):
+def parse_trc(filepath, progress_cb=None):
     """
     Parse a Vector TRC log file and extract timestamp, CAN ID, and data bytes.
     Returns a list of Frame objects with timestamp preserved as-is.
@@ -40,7 +47,9 @@ def parse_trc(filepath):
     )
 
     with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
+        for idx, line in enumerate(f, 1):
+            if progress_cb:
+                progress_cb(len(line))
             m = line_re.search(line)
             if not m:
                 continue
@@ -163,8 +172,8 @@ def analyze(frames):
             if bms_st == 0 and not bms_zero_seen:
                 bms_zero_seen = True
 
-            # First non-zero state after having been 0 → Reflect SoC (ignore zero SoC glitches)
-            if bms_zero_seen and bms_st != 0 and not bms_exit_zero and soc > 0:
+            # First non-zero state after having been 0 -> Reflect SoC (accept zero SoC too)
+            if bms_zero_seen and bms_st != 0 and not bms_exit_zero:
                 reflect_soc = soc
                 bms_exit_zero = True
 
@@ -550,7 +559,9 @@ def main():
 
     print(f"Using TRC file from GUI: {filepath}")
 
-    frames = parse_trc(filepath)
+    progress_cb = progress_by_bytes(filepath, step=PROGRESS_STEP)
+
+    frames = parse_trc(filepath, progress_cb=progress_cb)
     cycles = analyze(frames)
 
     header = (
@@ -577,6 +588,7 @@ def main():
         )
 
     save_json(cycles, filepath)
+    print("PROGRESS 100.0", flush=True)
 
 
 if __name__ == "__main__":
