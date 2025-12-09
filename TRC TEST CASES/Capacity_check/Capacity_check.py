@@ -845,18 +845,23 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, therm_sam
 
     low_soc_found = low_soc_start_ts is not None
     dist_after_low_soc = None
+    cap_after_low_soc = None
 
-    if low_soc_found and odo_list:
-        odo_at_low = lookup_before(low_soc_start_ts, odo_list)
-        if odo_at_low:
-            if uv_detected:
-                odo_at_end = lookup_before(uv_ts, odo_list)
-            else:
-                odo_at_end = odo_list[-1]
-            if odo_at_end:
-                dist_after_low_soc = max(0.0, odo_at_end[1] - odo_at_low[1])
+    if low_soc_found:
+        end_ts_for_low_soc = uv_ts if uv_detected else t_end
+        cap_after_low_soc = integrate_window(current_list, low_soc_start_ts, end_ts_for_low_soc)
 
-    return final_rows, total_range, dist_after_low_soc, uv_detected, low_soc_found
+        if odo_list:
+            odo_at_low = lookup_before(low_soc_start_ts, odo_list)
+            if odo_at_low:
+                if uv_detected:
+                    odo_at_end = lookup_before(uv_ts, odo_list)
+                else:
+                    odo_at_end = odo_list[-1]
+                if odo_at_end:
+                    dist_after_low_soc = max(0.0, odo_at_end[1] - odo_at_low[1])
+
+    return final_rows, total_range, dist_after_low_soc, cap_after_low_soc, uv_detected, low_soc_found
 
 
 # =========================================================
@@ -867,7 +872,8 @@ def draw_table_png(
     output,
     total_cap_override=None,
     total_range=0.0,
-    dist_after_low_soc=0.0,
+    dist_after_low_soc=None,
+    cap_after_low_soc=None,
     uv_detected=False,
     low_soc_found=False,
 ):
@@ -938,15 +944,16 @@ def draw_table_png(
         total_cap += cap
         y -= row_h
 
-    # Extra row for Distance after SoC <= 1%
+    # Extra row for Distance after SoC <= 1% (with cap exchange)
     if not low_soc_found:
-        msg = "Distance Covered SoC<=1% = N/A"
-    elif uv_detected and dist_after_low_soc is not None:
-        msg = f"Distance Covered SoC<=1% to UV = {dist_after_low_soc:.1f} km"
-    elif dist_after_low_soc is not None:
-        msg = f"Distance Covered SoC<=1% = {dist_after_low_soc:.1f} km (UV Not detected)"
+        msg = "Distance Covered SoC<=1% = N/A, Cap Exchange = N/A"
     else:
-        msg = "Distance Covered SoC<=1% = N/A"
+        dist_text = "N/A" if dist_after_low_soc is None else f"{dist_after_low_soc:.1f} km"
+        cap_text = "N/A" if cap_after_low_soc is None else f"{cap_after_low_soc:.2f} Ah"
+        if uv_detected:
+            msg = f"Distance Covered SoC<=1% to UV = {dist_text}, Cap Exchange = {cap_text}"
+        else:
+            msg = f"Distance Covered SoC<=1% = {dist_text} (UV Not detected), Cap Exchange = {cap_text}"
 
     ax.add_patch(Rectangle((0, y), 1, row_h, fc="white", ec="black"))
     ax.text(
@@ -1051,6 +1058,7 @@ def main():
         rows,
         total_range,
         dist_after_low_soc,
+        cap_after_low_soc,
         uv_detected,
         low_soc_found,
     ) = build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, therm_samples, trc)
@@ -1082,6 +1090,7 @@ def main():
         total_cap_override=None,
         total_range=total_range,
         dist_after_low_soc=dist_after_low_soc,
+        cap_after_low_soc=cap_after_low_soc,
         uv_detected=uv_detected,
         low_soc_found=low_soc_found,
     )
