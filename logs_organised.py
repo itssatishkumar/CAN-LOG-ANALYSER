@@ -12,15 +12,34 @@ RE_FRAME = re.compile(
     r"^\s*(\d+)\)?\s+([\d.]+)\s+([A-Za-z]+)\s+([0-9A-Fa-f]+)\s+(\d+)\s*(.*)$"
 )
 
+MONTHS = {
+    1: "JAN", 2: "FEB", 3: "MAR", 4: "APR", 5: "MAY", 6: "JUN",
+    7: "JUL", 8: "AUG", 9: "SEP", 10: "OCT", 11: "NOV", 12: "DEC"
+}
+
+# ------------ MODE KEYWORDS (case-insensitive, order matters: longer first) ------------
+# These are the "modes" you care about. We will detect them even if placed anywhere in the filename.
+MODE_PATTERNS = [
+    ("Thunder City Max", re.compile(r"\bTHUNDER\s+CITY\s+MAX\b", re.IGNORECASE)),
+    ("Thunder City",     re.compile(r"\bTHUNDER\s+CITY\b", re.IGNORECASE)),
+    ("Thunder Mode",     re.compile(r"\bTHUNDER\s+MODE\b", re.IGNORECASE)),
+    ("Thunder",          re.compile(r"\bTHUNDER\b", re.IGNORECASE)),
+    ("Rhino Mode",       re.compile(r"\bRHINO\s+MODE\b", re.IGNORECASE)),
+    ("Rhino",            re.compile(r"\bRHINO\b", re.IGNORECASE)),
+    ("Eco Mode",         re.compile(r"\bECO\s+MODE\b", re.IGNORECASE)),
+    ("Eco",              re.compile(r"\bECO\b", re.IGNORECASE)),
+]
+
+# Words that mean "not part of mode phrase" (for heuristic fallback)
+STOP_WORDS = {
+    "MBMS", "HC", "LFP", "MARVEL", "DISCHARGING", "CHARGING",
+    "LOG", "TRC", "CSV", "DECODED", "DECODE", "FILE", "FINAL", "MERGED"
+}
+
 # ------------ HELPERS ------------
 def _parse_start_datetime(text: str) -> datetime:
-    """
-    Parse the Start time string from TRC header, allowing minor formatting issues
-    like missing dot before milliseconds (e.g., '14:27:3041' -> '14:27:30.41').
-    """
-    cleaned = text.strip().replace(".0", "")  # common suffix like '...502.0' -> '...502'
+    cleaned = text.strip().replace(".0", "")
 
-    # Normalise variants where seconds are glued to milliseconds (e.g., 14:27:3041)
     candidates = [cleaned]
     try:
         date_part, time_part = cleaned.split()
@@ -37,7 +56,6 @@ def _parse_start_datetime(text: str) -> datetime:
     except Exception:
         pass
 
-    # Try multiple regional date formats (slash or dash) with/without milliseconds
     date_formats = [
         "%d-%m-%Y %H:%M:%S.%f",
         "%d-%m-%Y %H:%M:%S",
@@ -60,22 +78,103 @@ def _parse_start_datetime(text: str) -> datetime:
 
 
 def _format_timestamp(ts: datetime) -> str:
-    """
-    Format timestamp similar to PCAN style with millisecond + 0.1 ms precision.
-    Example: '11-11-2025 05:03:30.5026'
-    """
     base = ts.strftime("%d-%m-%Y %H:%M:%S")
-    total_us = ts.microsecond                # 0..999_999
-    ms = total_us // 1000                    # full milliseconds (0..999)
-    tenth_ms = (total_us % 1000) // 100      # tenth of a millisecond (0..9)
+    total_us = ts.microsecond
+    ms = total_us // 1000
+    tenth_ms = (total_us % 1000) // 100
     return f"{base}.{ms:03d}{tenth_ms}"
+
+
+def _date_tag(dt: datetime) -> str:
+    return f"{dt.day}{MONTHS[dt.month]}{dt.year}"
+
+
+def _sanitize_filename(name: str) -> str:
+    name = re.sub(r'[<>:"/\\|?*]+', ' ', name)
+    name = re.sub(r"\s+", " ", name).strip()
+    return name[:180]
+
+
+def _normalize_filename(s: str) -> str:
+    # normalize separators/spaces for robust matching
+    s = Path(s).stem
+    s = re.sub(r"[_\-,]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def find_mode_anywhere(clean_name: str) -> str | None:
+    """
+    Detect modes even if words appear anywhere.
+    Handles 'THUNDER MODE' and also just 'THUNDER'.
+    Case-insensitive.
+    """
+    for label, pat in MODE_PATTERNS:
+        if pat.search(clean_name):
+            # normalize label output (e.g. "Thunder Mode" vs "Thunder")
+            return label
+    return None
+
+
+def extract_vehicle_weight_mode_from_name(filename: str) -> tuple[str | None, str | None, str | None]:
+    clean = _normalize_filename(filename)
+    tokens = clean.split()
+
+    # Vehicle: first token
+    vehicle = tokens[0] if tokens else None
+
+    # Weight: 550KG / 550 kg / 550kg
+    w_match = re.search(r"\b(\d{2,5})\s*(kg)\b", clean, flags=re.IGNORECASE)
+    weight = f"{int(w_match.group(1))}kg" if w_match else None
+
+    # Mode: robust search anywhere (case-insensitive)
+    mode = find_mode_anywhere(clean)
+
+    # Heuristic fallback: if still no mode, try to capture after an anchor like THUNDER/RHINO/ECO
+    if mode is None:
+        upper = [t.upper() for t in tokens]
+        for anchor in ("THUNDER", "RHINO", "ECO"):
+            if anchor in upper:
+                i = upper.index(anchor)
+                chunk = tokens[i:i + 5]  # anchor + next up to 4 words
+                cleaned = []
+                for w in chunk:
+                    if w.upper() in STOP_WORDS:
+                        break
+                    # stop at obvious non-mode tokens like IDs and weights
+                    if re.fullmatch(r"L[-_]?\d+", w, flags=re.IGNORECASE):
+                        break
+                    if re.fullmatch(r"\d{2,5}KG", w, flags=re.IGNORECASE):
+                        break
+                    cleaned.append(w)
+                if cleaned:
+                    mode = " ".join(cleaned).title()
+                    break
+
+    return vehicle, weight, mode
+
+
+def build_output_name_from_trc(start_dt: datetime, filepaths: list[str]) -> str:
+    date_part = _date_tag(start_dt)
+
+    v, w, m = extract_vehicle_weight_mode_from_name(Path(filepaths[0]).name)
+    if v is None or w is None or m is None:
+        for fp in filepaths[1:]:
+            vv, ww, mm = extract_vehicle_weight_mode_from_name(Path(fp).name)
+            v = v or vv
+            w = w or ww
+            m = m or mm
+            if v and w and m:
+                break
+
+    parts = [p for p in [v, date_part, w, m] if p]
+    return _sanitize_filename(" ".join(parts)) if parts else _sanitize_filename(f"Merged {_date_tag(start_dt)}")
 
 
 # ------------ PARSE A SINGLE TRC FILE ------------
 def parse_trc_file(filepath: str):
     lines = Path(filepath).read_text(encoding="utf-8", errors="ignore").splitlines()
 
-    # Read STARTTIME from header (seconds) — used only for sorting between files if needed
     start_sec = None
     for ln in lines:
         m = RE_STARTTIME_SEC.match(ln)
@@ -83,7 +182,6 @@ def parse_trc_file(filepath: str):
             start_sec = float(m.group(1))
             break
 
-    # Read "Start time:" line (absolute datetime string)
     start_str = None
     for ln in lines:
         m = RE_STARTTIME_STR.search(ln)
@@ -94,38 +192,32 @@ def parse_trc_file(filepath: str):
     if start_str is None:
         raise ValueError(f"Missing 'Start time:' in {filepath}")
 
-    # Parse frames
     frames_raw = []
     for ln in lines:
         m = RE_FRAME.match(ln)
         if m:
-            msgnum  = int(m.group(1))
-            offset  = float(m.group(2))   # "Time Offset (ms)" from header
-            ftype   = m.group(3)
-            canid   = m.group(4)
-            dlc     = m.group(5)
-            data    = m.group(6)
+            offset = float(m.group(2))
+            ftype = m.group(3)
+            canid = m.group(4)
+            dlc = m.group(5)
+            data = m.group(6)
             frames_raw.append((offset, ftype, canid, dlc, data))
 
     if not frames_raw:
         raise ValueError(f"No frames found in {filepath}")
 
-    # Convert absolute Start Time string → datetime (lenient parsing)
     start_dt = _parse_start_datetime(start_str)
 
-    # ---------- APPLY RULE ----------
-    # FIRST FRAME = Start time (no offset added)
+    # FIRST FRAME = Start time
     offset_base = frames_raw[0][0]
 
     frames = []
     for offset, ftype, canid, dlc, data in frames_raw:
-        # Offsets are in ms (with 0.1 ms resolution). Convert to microseconds.
-        delta_ms = offset - offset_base               # relative to first frame
-        delta_us = int(round(delta_ms * 1000.0))      # ms → µs
+        delta_ms = offset - offset_base
+        delta_us = int(round(delta_ms * 1000.0))
         actual_dt = start_dt + timedelta(microseconds=delta_us)
         frames.append((actual_dt, ftype, canid, dlc, data))
 
-    # Include parsed datetime so caller can order files reliably
     return start_sec, start_str, start_dt, frames
 
 
@@ -144,10 +236,8 @@ def merge_trcs(filepaths):
     if not all_files:
         raise RuntimeError("No valid TRC files selected.")
 
-    # Sort by actual parsed start datetime so header matches earliest file
     all_files.sort(key=lambda x: x[2])
 
-    # Remove duplicate TRC files based on STARTTIME seconds
     seen = set()
     unique = []
     for st, st_str, st_dt, fr in all_files:
@@ -156,21 +246,16 @@ def merge_trcs(filepaths):
             unique.append((st, st_str, st_dt, fr))
             seen.add(dedup_key)
 
-    # Flatten all frames with timestamps
     merged_all = []
-    for st, st_str, _st_dt, frames in unique:
+    for _st, _st_str, _st_dt, frames in unique:
         merged_all.extend(frames)
 
-    # Sort all frames by actual datetime
     merged_all.sort(key=lambda x: x[0])
 
-    # Header of final output = first TRC file's header info
-    base_start_sec = (
-        unique[0][0] if unique[0][0] is not None else unique[0][2].timestamp()
-    )
-    base_start_str  = unique[0][1]
+    base_start_sec = unique[0][0] if unique[0][0] is not None else unique[0][2].timestamp()
+    base_start_str = unique[0][1]
+    earliest_dt = unique[0][2]
 
-    # ------------ BUILD FINAL OUTPUT ------------
     out = []
     out.append(";$FILEVERSION=1.1")
     out.append(f";$STARTTIME={base_start_sec}")
@@ -192,7 +277,7 @@ def merge_trcs(filepaths):
         out.append(line)
         msgnum += 1
 
-    return "\n".join(out)
+    return "\n".join(out), earliest_dt
 
 
 # ------------ GUI FILE PICKER ------------
@@ -207,12 +292,11 @@ def main():
         print("No TRC files selected.")
         return
 
-    merged_text = merge_trcs(filepaths)
+    merged_text, earliest_dt = merge_trcs(list(filepaths))
 
-    # Save merged TRC next to the first selected raw file with PC timestamp in name
     first_folder = Path(filepaths[0]).parent
-    ts_str = datetime.now().strftime("%d%b%Y_%H_%M_%S")
-    outpath = first_folder / f"Final_Trc_Merged_{ts_str}.trc"
+    nice_name = build_output_name_from_trc(earliest_dt, list(filepaths))
+    outpath = first_folder / f"{nice_name}.trc"
     outpath.write_text(merged_text, encoding="utf-8")
 
     print("\n=======================================================")
