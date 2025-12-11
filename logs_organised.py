@@ -171,6 +171,20 @@ def build_output_name_from_trc(start_dt: datetime, filepaths: list[str]) -> str:
     return _sanitize_filename(" ".join(parts)) if parts else _sanitize_filename(f"Merged {_date_tag(start_dt)}")
 
 
+def _with_final_prefix(name: str) -> str:
+    """
+    Ensure the output filename always starts with 'FINAL ' (case-insensitive),
+    avoiding duplicate prefixes if it already has one.
+    """
+    # Normalize leading whitespace/underscores for a consistent check
+    trimmed = name.lstrip(" _")
+    if trimmed.upper().startswith("FINAL "):
+        return trimmed
+    if trimmed.upper().startswith("FINAL_"):
+        return "FINAL " + trimmed[6:].lstrip("_ ")
+    return f"FINAL {trimmed}"
+
+
 # ------------ PARSE A SINGLE TRC FILE ------------
 def parse_trc_file(filepath: str):
     lines = Path(filepath).read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -296,6 +310,7 @@ def main():
 
     first_folder = Path(filepaths[0]).parent
     nice_name = build_output_name_from_trc(earliest_dt, list(filepaths))
+    nice_name = _with_final_prefix(nice_name)
     outpath = first_folder / f"{nice_name}.trc"
     outpath.write_text(merged_text, encoding="utf-8")
 
