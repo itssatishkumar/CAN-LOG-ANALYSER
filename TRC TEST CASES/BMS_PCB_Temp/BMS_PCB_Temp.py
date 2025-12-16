@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import re
 from datetime import datetime
 import json
+import struct
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
@@ -28,6 +29,12 @@ IMBALANCE_FAIL = 10.0     # °C
 MAX_TIME_GAP_MS = 2000    # 2 seconds
 
 OUTPUT_ENCODING = "cp1252"  # for JSON files (Windows-friendly)
+
+# -----------------------------------------------------
+# SIGNED INT8 HELPER (ADDED)
+# -----------------------------------------------------
+def s8(b):
+    return struct.unpack("b", bytes([b]))[0]
 
 # -----------------------------------------------------
 # GET TRC FILE
@@ -106,9 +113,9 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         # CAN ID 0x014E - Internal temp Delta / Min / Max
         # -----------------------------------------------------
         if can_id == 0x014E and dlc >= 6:
-            reported_int_max = data[3]   # Int_Temp_Max
-            reported_int_min = data[4]   # Int_Temp_Min
-            reported_int_delta = data[5] # Int_Temp_Delta
+            reported_int_max = s8(data[3])   # Int_Temp_Max
+            reported_int_min = s8(data[4])   # Int_Temp_Min
+            reported_int_delta = s8(data[5]) # Int_Temp_Delta
 
         # -----------------------------------------------------
         # Temperature CAN frames (internal thermistors)
@@ -126,7 +133,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
                 for i, bidx in enumerate(byte_idxs):
                     idx = base + i
                     if bidx < dlc and idx < 16:
-                        temp_arr[idx] = data[bidx]
+                        temp_arr[idx] = s8(data[bidx])
 
                 break
 
@@ -146,7 +153,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
 active_ntc = set()
 for arr in raw_first_10s:
     for i, v in enumerate(arr):
-        if isinstance(v, int) and v > 0:
+        if isinstance(v, int):
             active_ntc.add(i)
 
 active_ntc = sorted(list(active_ntc))
