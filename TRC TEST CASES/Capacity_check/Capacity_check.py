@@ -140,11 +140,12 @@ THERM_RE = {can_id: make_can_regex(f"{can_id:04X}") for (_, (can_id, _)) in THER
 
 def decode_temp_byte(b: int) -> float:
     """
-    If your temp encoding is different, adjust here.
-    Currently assumes each byte is directly degrees C (0..255).
+    Decode temperature byte as SIGNED int8.
+    Example:
+      FC -> -4
+      F8 -> -8
     """
-    return float(b)
-
+    return float(struct.unpack("b", bytes([b]))[0])
 
 def parse_thermistor_frames(fp, progress_cb=None, total_lines=None):
     """
@@ -222,8 +223,9 @@ def detect_active_ntc_from_therms(therm_samples, seconds=10):
         if ts > t_end:
             break
         for idx, v in temps.items():
-            if isinstance(v, (int, float)) and v > 0:
+            if isinstance(v, (int, float)):
                 active.add(idx)
+
 
     return sorted(active)
 
@@ -250,8 +252,10 @@ def window_minmax_from_therms(therm_samples, start_ts, end_ts, ntc_names, active
         for idx, v in temps.items():
             if active is not None and idx not in active:
                 continue
-            if v is None or v <= 0:
+            if v is None:
                 continue
+
+
 
             # Track max with ties only if they occur at the same timestamp
             if max_v is None or v > max_v:
@@ -350,7 +354,14 @@ def parse_trc(fp, progress_cb=None):
                 ts = parse_ts(m.group(1))
                 d = m.group(3).split()
                 if ts and len(d) >= 2:
-                    ntc_list.append((ts, (int(d[0], 16), int(d[1], 16))))
+                    ntc_list.append((
+                        ts,
+                        (
+                            struct.unpack("b", bytes([int(d[0],16)]))[0],
+                            struct.unpack("b", bytes([int(d[1],16)]))[0],
+                        )
+                    ))
+
 
             # ODO (0x402)
             m = RE_0402.match(line)
