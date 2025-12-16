@@ -114,15 +114,12 @@ def load_meta(csv_path: str) -> Dict[str, str]:
         except Exception:
             pass
 
-    # If vehicle name is missing, try to derive from selected file name passed via env
+    # If vehicle name is missing, use selected file name from GUI as-is
     if not meta.get("VEHICLE NAME"):
         sel = os.environ.get(SELECTED_FILE_ENV, "")
         if sel:
-            name = os.path.splitext(os.path.basename(sel))[0]
-            if name.lower().startswith("final "):
-                name = name[6:].lstrip()
-            if name:
-                meta["VEHICLE NAME"] = name
+            meta["VEHICLE NAME"] = os.path.basename(sel)
+
 
     return meta
 
