@@ -116,10 +116,8 @@ def load_meta(csv_path: str) -> Dict[str, str]:
 
     # If vehicle name is missing, use selected file name from GUI as-is
     if not meta.get("VEHICLE NAME"):
-        sel = os.environ.get(SELECTED_FILE_ENV, "")
-        if sel:
-            meta["VEHICLE NAME"] = os.path.basename(sel)
-
+        if len(sys.argv) > 1:
+            meta["VEHICLE NAME"] = os.path.basename(sys.argv[1])
 
     return meta
 
