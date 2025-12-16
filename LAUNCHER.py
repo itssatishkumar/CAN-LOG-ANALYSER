@@ -1337,31 +1337,50 @@ class CANLogDebugger(QWidget):
             QMessageBox.warning(self, "Error", "No file selected!")
             return
 
-        out_file = "tracker_summary.csv"
+        docx_path = os.path.join(self.script_dir, "tracker_summary.docx")
+        generator_script = os.path.join(self.script_dir, "Generate_Tracker.py")
+
+        meta_payload = {
+            "BMS HW VERSION": self.tx_hw.text(),
+            "BMS FIRMWARE": self.tx_fw.text(),
+            "BMS CONFIG ID": self.tx_cfg.text(),
+            "BMS GITSHA": self.tx_git.text(),
+            "BMS MANIFEST": self.tx_manifest.text(),
+            "STARK FIRMWARE": self.tx_stark_fw.text(),
+            "STARK CONFIG": self.tx_stark_cfg.text(),
+            "XAVIER FIRMWARE": self.tx_xavier_fw.text(),
+            "DISTANCE COVERED": self.tx_distance.text(),
+            "VCU Reset Count": self.tx_vcu_value.text(),
+            "VCU Reset Result": self.tx_vcu_result.text(),
+            "BMS Reset Count": self.tx_bms_value.text(),
+            "BMS Reset Result": self.tx_bms_result.text(),
+        }
+
+        if not os.path.exists(generator_script):
+            QMessageBox.warning(self, "Tracker", f"Generate_Tracker.py not found:\n{generator_script}")
+            return
 
         try:
-            with open(out_file, "w", newline="") as fw:
-                writer = csv.writer(fw)
-                writer.writerow(["Field", "Value"])
-                writer.writerow(["BMS HW VERSION", self.tx_hw.text()])
-                writer.writerow(["BMS FIRMWARE", self.tx_fw.text()])
-                writer.writerow(["BMS CONFIG ID", self.tx_cfg.text()])
-                writer.writerow(["BMS GITSHA", self.tx_git.text()])
-                writer.writerow(["BMS MANIFEST", self.tx_manifest.text()])
-                writer.writerow(["STARK FIRMWARE", self.tx_stark_fw.text()])
-                writer.writerow(["STARK CONFIG", self.tx_stark_cfg.text()])
-                writer.writerow(["XAVIER FIRMWARE", self.tx_xavier_fw.text()])
-                writer.writerow(["Distance Covered", self.tx_distance.text()])
-
-                writer.writerow(["VCU Reset Count", self.tx_vcu_value.text()])
-                writer.writerow(["VCU Reset Result", self.tx_vcu_result.text()])
-                writer.writerow(["BMS Reset Count", self.tx_bms_value.text()])
-                writer.writerow(["BMS Reset Result", self.tx_bms_result.text()])
-
-            QMessageBox.information(self, "Tracker", f"Tracker generated: {out_file}")
-
+            env = os.environ.copy()
+            env["META_JSON"] = json.dumps(meta_payload)
+            env["SELECTED_FILE_NAME"] = os.path.basename(self.selected_file_path)
+            proc = subprocess.run(
+                [sys.executable, generator_script, docx_path, self.tests_folder],
+                cwd=self.script_dir,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
         except Exception as e:
-            QMessageBox.warning(self, "Error", str(e))
+            QMessageBox.warning(self, "Tracker", f"Failed to start tracker script:\n{e}")
+            return
+
+        if proc.returncode != 0:
+            err_msg = proc.stderr.strip() or proc.stdout.strip() or "Tracker script returned an error."
+            QMessageBox.warning(self, "Tracker", err_msg)
+            return
+
+        QMessageBox.information(self, "Tracker", f"Tracker generated:\n{docx_path}")
 
 # -------------------------------------------------------
 # MAIN
