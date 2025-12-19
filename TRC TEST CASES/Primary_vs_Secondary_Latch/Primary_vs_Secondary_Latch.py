@@ -30,7 +30,7 @@ MIN_SOC_STEP = 0.1
 
 
 # =========================================================
-# STEP-BASED PROGRESS (ONLY CHANGE)
+# STEP-BASED PROGRESS
 # =========================================================
 def progress_by_steps(start, end, step=0.5):
     last = start
@@ -63,12 +63,13 @@ RE_18FF = re.compile(
     r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+18FF50E5\s+8\s+(.+)"
 )
 
+
 def parse_ts(t):
     return fast_datetime_from_str(t)
 
 
 # =========================================================
-# FILE SELECT
+# FILE SELECT (UNCHANGED)
 # =========================================================
 def select_trc_file():
     root = tk.Tk()
@@ -80,7 +81,32 @@ def select_trc_file():
 
 
 # =========================================================
-# PARSE TRC (CORE LOGIC UNCHANGED)
+# TRC PICKING FIX (ONLY ADDITION)
+# =========================================================
+def get_trc_file_once():
+    if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):
+        return sys.argv[1]
+
+    trc_env = os.environ.get("TRC_FILE")
+    if trc_env and os.path.isfile(trc_env):
+        return trc_env
+
+    saved = Path(__file__).resolve().parent / "selected_trc.txt"
+    if saved.exists():
+        p = saved.read_text().strip()
+        if os.path.isfile(p):
+            return p
+
+    trc = select_trc_file()
+    if trc and os.path.isfile(trc):
+        saved.write_text(trc)
+        return trc
+
+    raise RuntimeError("No TRC file selected")
+
+
+# =========================================================
+# PARSE TRC (UNCHANGED)
 # =========================================================
 def parse_trc(fp, progress_cb=None, total_lines=None):
     soc_list = []
@@ -131,7 +157,7 @@ def parse_trc(fp, progress_cb=None, total_lines=None):
 
 
 # =========================================================
-# CHARGE SESSION DETECTION
+# CHARGE SESSION DETECTION (UNCHANGED)
 # =========================================================
 def detect_charge_sessions(ff18_list, timeout_sec=3.0):
     if not ff18_list:
@@ -164,6 +190,7 @@ def lookup_before(ts, data):
             break
     return best
 
+
 def integrate_window(current_list, start_ts, end_ts):
     DEFAULT_DT = 0.3
     As = 0.0
@@ -183,6 +210,7 @@ def integrate_window(current_list, start_ts, end_ts):
 
     return As / 3600.0
 
+
 def window_temp_avg(temp_list, start_ts, end_ts):
     s = c = 0
     for ts, v in temp_list:
@@ -191,11 +219,13 @@ def window_temp_avg(temp_list, start_ts, end_ts):
             c += 1
     return (s / c) if c else None
 
+
 def find_latch_ts(latch_list, start_ts, end_ts):
     for ts, v in latch_list:
         if start_ts <= ts <= end_ts and v == 1:
             return ts
     return None
+
 
 def format_duration(td):
     s = int(td.total_seconds())
@@ -300,7 +330,7 @@ def draw_charging_table(rows, latch_row, total_time, total_ah, output):
 # MAIN
 # =========================================================
 def main():
-    trc = os.environ.get("TRC_FILE") or select_trc_file()
+    trc = get_trc_file_once()
     out = Path(__file__).resolve().parent
 
     with open(trc, "r", encoding="utf-8", errors="ignore") as f:
@@ -356,7 +386,7 @@ def main():
         latch_row,
         format_duration(total_time),
         total_ah,
-        out / "Charging_analysis.png",
+        out / "Primary_vs_Secondary_Latch_plot.png",
     )
 
     final_cb(1.0)
