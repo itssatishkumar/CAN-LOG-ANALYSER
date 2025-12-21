@@ -198,7 +198,7 @@ print(f"ASCII Summary saved to JSON: {json_summary_path}")
 # -----------------------------------------------------
 plt.figure(figsize=(12, 5))
 plt.plot(df["ts"], df["SoC"], linewidth=2, label="SoC (%)")
-plt.scatter(df.loc[idx, "ts"], df.loc[idx, "SoC"], s=70, label="Max SoC")
+plt.scatter(df.loc[idx, "ts"], df.loc[idx, "SoC"], s=90, c="red", zorder=5, label="Max SoC Jump")
 
 plt.title("SoC vs Time")
 plt.xlabel("Time")
