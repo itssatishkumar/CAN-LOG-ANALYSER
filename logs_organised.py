@@ -314,6 +314,12 @@ def main():
     outpath = first_folder / f"{nice_name}.trc"
     outpath.write_text(merged_text, encoding="utf-8")
 
+    try:
+        marker = Path(__file__).resolve().with_name("last_merged_trc.txt")
+        marker.write_text(str(outpath), encoding="utf-8")
+    except Exception:
+        pass
+
     print("\n=======================================================")
     print("   ✅ MERGE COMPLETE")
     print(f"   Output file saved as: {outpath}")
