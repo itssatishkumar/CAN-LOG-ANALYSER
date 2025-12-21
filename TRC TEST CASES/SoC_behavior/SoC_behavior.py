@@ -10,6 +10,7 @@ import json
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
+
 from trc_utils import fast_parse_ts, progress_by_bytes
 
 PROGRESS_STEP = 0.5  # percent granularity for live progress
@@ -79,6 +80,8 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         raw_soc = (data[1] << 8) | data[0]
         soc = raw_soc * 0.01
         bms_state = data[4]
+
+        # ignore only BMS state = 0
         if bms_state == 0:
             continue
 
@@ -104,9 +107,10 @@ df = pd.DataFrame({
 })
 
 # -----------------------------------------------------
-# FIND VALID DELTAS
+# FIND VALID DELTAS  (CORRECT LOGIC)
 # -----------------------------------------------------
 valid = []
+
 for i in range(1, len(df)):
     prev = df.iloc[i - 1]
     curr = df.iloc[i]
@@ -114,9 +118,10 @@ for i in range(1, len(df)):
     dsoc = abs(curr.SoC - prev.SoC)
     dt_ms = curr.ts - prev.ts
 
-    if dt_ms > 3000:
+    # YOUR RULE
+    if dt_ms >= 3000:
         continue
-    if dsoc > 5:
+    if curr.BMS == 0:
         continue
 
     valid.append((i, dsoc, dt_ms))
@@ -144,7 +149,7 @@ summary = {
 }
 
 # -----------------------------------------------------
-# SAVE PASS/FAIL RESULT â†’ SoC_results.json
+# SAVE PASS/FAIL RESULT → SoC_results.json
 # -----------------------------------------------------
 result = "FAIL" if summary["Max_Delta_SoC"] > 0.1 else "PASS"
 
@@ -159,7 +164,7 @@ with open(result_json_path, "w", encoding="utf-8") as f:
 print(f"SoC PASS/FAIL saved: {result_json_path}")
 
 # -----------------------------------------------------
-# CLEAN, ALIGNED ASCII TABLE â†’ soc_summary.json
+# ASCII SUMMARY → soc_summary.json
 # -----------------------------------------------------
 LEFT_WIDTH = 22
 RIGHT_WIDTH = 42
@@ -189,14 +194,14 @@ with open(json_summary_path, "w", encoding="utf-8") as f:
 print(f"ASCII Summary saved to JSON: {json_summary_path}")
 
 # -----------------------------------------------------
-# SOÃ‡ PLOT
+# SOC PLOT
 # -----------------------------------------------------
 plt.figure(figsize=(12, 5))
-plt.plot(df["ts"], df["SoC"], linewidth=2, color="blue", label="SoC (%)")
-plt.scatter(df.loc[idx, "ts"], df.loc[idx, "SoC"], s=70, color="red", label="Max SoC")
+plt.plot(df["ts"], df["SoC"], linewidth=2, label="SoC (%)")
+plt.scatter(df.loc[idx, "ts"], df.loc[idx, "SoC"], s=70, label="Max SoC")
 
 plt.title("SoC vs Time")
-plt.xlabel("Time (HH:MM:SS)")
+plt.xlabel("Time")
 plt.ylabel("SoC (%)")
 plt.grid(True, linestyle="--", alpha=0.4)
 
