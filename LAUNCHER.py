@@ -1,6 +1,5 @@
 
 import sys
-import sys
 import os
 import subprocess
 import json
@@ -924,6 +923,17 @@ class CANLogDebugger(QWidget):
             initial_dir = os.path.dirname(self.logs_last_output_path)
         elif self.selected_file_path:
             initial_dir = os.path.dirname(self.selected_file_path)
+        else:
+            home = os.path.expanduser("~")
+            candidates = [
+                os.path.join(home, "Downloads"),
+                os.path.join(home, "Desktop"),
+                home,
+            ]
+            for d in candidates:
+                if os.path.isdir(d):
+                    initial_dir = d
+                    break
 
         path, _ = QFileDialog.getOpenFileName(
             self,
