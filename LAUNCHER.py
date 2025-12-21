@@ -820,9 +820,6 @@ class CANLogDebugger(QWidget):
                 except Exception:
                     pass
 
-    # ======================================================
-    # MAKE LOGS ORGANISED
-    # ======================================================
     def on_make_logs(self):
         logs_script = os.path.join(self.script_dir, "logs_organised.py")
 
@@ -836,15 +833,28 @@ class CANLogDebugger(QWidget):
         self.make_btn_animating = True
         self._update_title_glow()
         self.make_btn.setEnabled(False)
-
-        # Run script
+        home = os.path.expanduser("~")
+        initial_dir = ""
+        candidates = [
+            os.path.join(home, "Downloads"),
+            os.path.join(home, "Desktop"),
+        ]
+        for d in candidates:
+            if os.path.isdir(d):
+                initial_dir = d
+                break
+        if not initial_dir:
+            if os.path.isdir(home):
+                initial_dir = home
+            else:
+                initial_dir = "C:/"
         self.logs_proc = QProcess(self)
         self.logs_proc.setWorkingDirectory(self.script_dir)
 
         self.logs_proc.finished.connect(self.on_logs_finished)
         self.logs_proc.readyReadStandardOutput.connect(self._on_logs_stdout)
 
-        self.logs_proc.start(sys.executable, [logs_script])
+        self.logs_proc.start(sys.executable, [logs_script, initial_dir])
 
     def on_logs_finished(self):
         self.make_btn_animating = False
