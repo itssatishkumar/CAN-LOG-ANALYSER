@@ -333,7 +333,6 @@ def main():
     dl_valid = [(t, i, o) for t, i, o in zip(dl_ts, dlci_vals, dlco_vals) if t is not None]
     soc_valid = [(t, s) for t, s in zip(soc_ts, soc_vals) if t is not None]
 
-    # Plot current and limits versus time/sample index (as before)
     use_datetime_x = False
 
     if valid_points:
@@ -381,8 +380,6 @@ def main():
     ax_curr.set_ylabel("Current (A)")
     ax_curr.grid(True, linestyle="--", alpha=0.5)
 
-    # --- SoC-style X axis (like AuxCharge_with_Vehicle_state_change) ---
-    # Primary bottom axis shows SoC values for tick labels.
     if soc_valid:
         soc_x, soc_y = zip(*soc_valid)
         soc_x_num = mdates.date2num(soc_x)
