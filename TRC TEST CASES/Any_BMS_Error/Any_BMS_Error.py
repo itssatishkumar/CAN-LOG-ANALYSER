@@ -223,14 +223,14 @@ def update_voltage_samples(can_id, data, dlc, ts_string):
         if len(last_v_samples) > 20:
             last_v_samples.pop(0)
 
-        # Track absolute minimum Vmin across entire log for UV row when no UV error
         global global_min_v_sample
-        if global_min_v_sample is None:
-            global_min_v_sample = sample
-        else:
-            prev_vmin = global_min_v_sample.get("Vmin")
-            if prev_vmin is None or (v_min is not None and v_min < prev_vmin):
+        if v_min is not None and v_min >= 5.0:
+            if global_min_v_sample is None:
                 global_min_v_sample = sample
+            else:
+                prev_vmin = global_min_v_sample.get("Vmin")
+                if prev_vmin is None or v_min < prev_vmin:
+                    global_min_v_sample = sample
 
 def compute_uv_context():
     recent = last_v_samples[-5:]
