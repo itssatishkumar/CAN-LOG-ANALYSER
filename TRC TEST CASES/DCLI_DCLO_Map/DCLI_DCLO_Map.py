@@ -333,26 +333,27 @@ def main():
     dl_valid = [(t, i, o) for t, i, o in zip(dl_ts, dlci_vals, dlco_vals) if t is not None]
     soc_valid = [(t, s) for t, s in zip(soc_ts, soc_vals) if t is not None]
 
+    # Plot current and limits versus time/sample index (as before)
+    use_datetime_x = False
+
     if valid_points:
         x_vals, y_vals = zip(*valid_points)
+        use_datetime_x = True
         pos = [(x, y) for x, y in zip(x_vals, y_vals) if y >= 0]
         neg = [(x, y) for x, y in zip(x_vals, y_vals) if y < 0]
 
         if pos:
             xp, yp = zip(*pos)
-            ax_curr.vlines(xp, [0]*len(xp), yp, color="green", linewidth=0.9, label="Charge / Positive")
+            ax_curr.vlines(xp, [0] * len(xp), yp, color="green", linewidth=0.9, label="Charge / Positive")
 
         if neg:
             xn, yn = zip(*neg)
-            ax_curr.vlines(xn, [0]*len(xn), yn, color="red", linewidth=0.9, label="Discharge / Negative")
+            ax_curr.vlines(xn, [0] * len(xn), yn, color="red", linewidth=0.9, label="Discharge / Negative")
 
         if dl_valid:
             dl_x, dl_i, dl_o = zip(*dl_valid)
             ax_curr.step(dl_x, dl_i, where="post", color="blue", linewidth=1.1, label="DCLI (limit IN)")
             ax_curr.step(dl_x, dl_o, where="post", color="orange", linewidth=1.1, label="DCLO (limit OUT)")
-
-        ax_curr.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
-        fig.autofmt_xdate()
 
     else:
         x_vals = list(range(1, len(currents) + 1))
@@ -361,18 +362,16 @@ def main():
 
         if pos:
             xp, yp = zip(*pos)
-            ax_curr.vlines(xp, [0]*len(xp), yp, color="green", linewidth=0.9)
+            ax_curr.vlines(xp, [0] * len(xp), yp, color="green", linewidth=0.9)
 
         if neg:
             xn, yn = zip(*neg)
-            ax_curr.vlines(xn, [0]*len(xn), yn, color="red", linewidth=0.9)
+            ax_curr.vlines(xn, [0] * len(xn), yn, color="red", linewidth=0.9)
 
         if dl_valid:
             dl_x, dl_i, dl_o = zip(*dl_valid)
             ax_curr.step(dl_x, dl_i, where="post", color="blue", linewidth=1.1, label="DCLI (limit IN)")
             ax_curr.step(dl_x, dl_o, where="post", color="orange", linewidth=1.1, label="DCLO (limit OUT, negated)")
-
-        ax_curr.set_xlabel("Sample #")
 
     ax_curr.set_title("DCLI / DCLO Map - Current Profile")
 
@@ -382,15 +381,46 @@ def main():
     ax_curr.set_ylabel("Current (A)")
     ax_curr.grid(True, linestyle="--", alpha=0.5)
 
-    # Attach SoC as secondary bottom x-axis when available
+    # --- SoC-style X axis (like AuxCharge_with_Vehicle_state_change) ---
+    # Primary bottom axis shows SoC values for tick labels.
     if soc_valid:
         soc_x, soc_y = zip(*soc_valid)
         soc_x_num = mdates.date2num(soc_x)
-        build_soc_axis(ax_curr, soc_x_num, soc_y)
-    elif soc_vals:
-        build_soc_axis(ax_curr, list(range(1, len(soc_vals) + 1)), soc_vals)
+        soc_vals_arr = np.array(soc_y, dtype=float)
 
-    ax_curr.set_xlabel("Time" if valid_points else "Sample #")
+        # X positions corresponding to the main plot
+        if use_datetime_x:
+            main_x_num = mdates.date2num(np.array(x_vals))
+        else:
+            main_x_num = np.asarray(x_vals, dtype=float)
+
+        if len(main_x_num) > 0:
+            tick_idx = np.linspace(0, len(main_x_num) - 1, num=min(20, len(main_x_num)), dtype=int)
+            tick_pos = main_x_num[tick_idx]
+            soc_at_ticks = np.interp(tick_pos, soc_x_num, soc_vals_arr)
+
+            ax_curr.set_xticks(tick_pos)
+            ax_curr.set_xticklabels([f"{v:.2f}" for v in soc_at_ticks], rotation=45, ha="right")
+            ax_curr.set_xlabel("State of Charge, SoC (%)")
+    elif soc_vals:
+        # Fallback: use SoC samples directly, similar to AuxCharge plot logic.
+        soc_vals_arr = np.array(soc_vals, dtype=float)
+        x_idx = np.arange(len(soc_vals_arr))
+        if len(x_idx) > 0:
+            tick_idx = np.linspace(0, len(x_idx) - 1, num=min(20, len(x_idx)), dtype=int)
+            tick_pos = x_idx[tick_idx]
+            ax_curr.set_xticks(tick_pos)
+            ax_curr.set_xticklabels([f"{soc_vals_arr[i]:.2f}" for i in tick_idx], rotation=45, ha="right")
+            ax_curr.set_xlabel("State of Charge, SoC (%)")
+    else:
+        # No SoC available – fall back to time or sample index.
+        if use_datetime_x:
+            ax_curr.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+            fig.autofmt_xdate()
+            ax_curr.set_xlabel("Time")
+        else:
+            ax_curr.set_xlabel("Sample #")
+
     fig.tight_layout()
 
     plot_path = out_dir / "DCLI_DCLO_Map_plot.png"
