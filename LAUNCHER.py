@@ -482,8 +482,12 @@ class CANLogDebugger(QWidget):
         table.setColumnWidth(4, int(total_width * (3 / total_ratio)))
 
         for i, name in enumerate(TEST_CASES):
+            display_name = name
+            if i == 0:
+                display_name = "SoC BEHAVIOR + SoC STUCK"
+
             # Base item for data/sorting only; visual handled by widget below
-            name_item = QTableWidgetItem(name)
+            name_item = QTableWidgetItem(display_name)
             table.setItem(i, 0, name_item)
 
             # Composite widget in TEST CASE column: label + RUN button
@@ -493,7 +497,7 @@ class CANLogDebugger(QWidget):
             h_layout.setContentsMargins(4, 0, 4, 0)
             h_layout.setSpacing(6)
 
-            lbl = QLabel(name)
+            lbl = QLabel(display_name)
             lbl.setStyleSheet("color:#1FA37A; font-weight:bold; background:white;")
             h_layout.addWidget(lbl, 1)
 
@@ -1177,9 +1181,10 @@ class CANLogDebugger(QWidget):
             QMessageBox.information(self, "Info", "This test is already running.")
             return
 
-        # Optionally clear previous outputs for just this test
+        # Optionally clear previous outputs for ALL tests, so every run (even single)
+        # starts with a clean set of result/summary/graph files.
         if CLEAR_OUTPUTS_ON_RUN_ALL:
-            self._clear_outputs_for_row(row)
+            self._clear_all_outputs()
 
         # Reset status/result cells for this row
         status_item = QTableWidgetItem("Not Run")
