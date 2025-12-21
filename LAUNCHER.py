@@ -1327,6 +1327,12 @@ class CANLogDebugger(QWidget):
                 row, 4, "FAIL", "#FF0000", align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip
             )
             success = True
+        elif result_str == "WARNING":
+            # Show WARNING as an in-between state (amber color)
+            self._set_colored_cell(
+                row, 4, "WARNING", "#FFA500", align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip
+            )
+            success = True
 
         if success:
             status_item = self.test_table.item(row, 1)
