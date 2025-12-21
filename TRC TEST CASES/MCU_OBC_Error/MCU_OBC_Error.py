@@ -258,22 +258,61 @@ for e in signals_result:
         e["Remark"] = uv_remark
         break
 
+# -----------------------------------------------------
+# OBC error severity (WARNING / FAIL based on BMSS)
+# -----------------------------------------------------
+obc_warning = False
+obc_fail = False
+
+for name, st in error_states.items():
+    if not name.startswith("OBC_"):
+        continue
+    for inst in st["instances"]:
+        t_ms = inst.get("Start_ms")
+        if t_ms is None:
+            continue
+        soc_ev = find_last_event(soc_events, t_ms)
+        if soc_ev is None:
+            # No BMSS info: treat as warning rather than hard fail
+            obc_warning = True
+            continue
+        _, _soc, bms_state, _vbat = soc_ev
+        if int(bms_state) == 3:
+            obc_fail = True
+        else:
+            obc_warning = True
+
+# For each OBC flag, add remark with first instance SoC and BMS State
+for e in signals_result:
+    if not e["Name"].startswith("OBC_"):
+        continue
+    if e["Instance_Count"] <= 0 or e.get("Remark"):
+        continue
+
+    first_inst = e["Instances"][0]
+    t_ms = first_inst.get("Start_ms")
+    if t_ms is None:
+        continue
+    soc_ev = find_last_event(soc_events, t_ms)
+    if soc_ev is None:
+        continue
+    _, soc_pct, bms_state, _vbat = soc_ev
+    e["Remark"] = f"SoC={soc_pct:.2f}%\nBMS State={int(bms_state)}"
+
 active_error_count = sum(1 for e in signals_result if e["Instance_Count"] > 0)
-other_error_count = sum(
+other_mcu_error_count = sum(
     1 for e in signals_result
-    if e["Name"] != "MCU_UnderVolt" and e["Instance_Count"] > 0
+    if e["Name"].startswith("MCU_") and e["Name"] != "MCU_UnderVolt" and e["Instance_Count"] > 0
 )
 
-if not uv_any:
-    # No MCU_UnderVolt observed: PASS if no other errors.
-    overall_result = "PASS" if other_error_count == 0 else "FAIL"
+# Determine overall result with PASS / WARNING / FAIL
+if other_mcu_error_count > 0 or obc_fail or (uv_any and not uv_all_soc_below_2):
+    overall_result = "FAIL"
 else:
-    # MCU_UnderVolt present: PASS only if all UV events are at SoC < 2%,
-    # BMSS != 3, and there are no other error flags.
-    if uv_all_soc_below_2 and other_error_count == 0:
-        overall_result = "PASS"
+    if obc_warning:
+        overall_result = "WARNING"
     else:
-        overall_result = "FAIL"
+        overall_result = "PASS"
 
 # -----------------------------------------------------
 # SAVE RESULTS JSON
@@ -349,6 +388,14 @@ tbl = ax.table(
 tbl.auto_set_font_size(False)
 tbl.set_fontsize(9)
 tbl.scale(1, 1.2)
+
+# Adjust column widths: make "ERROR Signal" 1.5x and "Status" 0.5x
+if rows:
+    base_w_error = tbl[0, 0].get_width()
+    base_w_status = tbl[0, 1].get_width()
+    for r in range(len(rows) + 1):  # +1 for header row
+        tbl[r, 0].set_width(base_w_error * 1.5)
+        tbl[r, 1].set_width(base_w_status * 0.5)
 
 # Color + formatting
 for (r, c), cell in tbl.get_celld().items():
