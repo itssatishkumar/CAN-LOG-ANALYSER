@@ -192,10 +192,11 @@ error_states = {
 }
 
 first_ts_ms = None
-last_v_samples = []  # capped FIFO with latest voltage/SoC samples
+last_v_samples = []  # capped FIFO with latest voltage/SoC samples (recent history)
 latest_soc = None
 uv_context_added = False  # ensure UV context only on first UV instance
 ov_context_added = False  # ensure OV context only on first OV instance
+global_min_v_sample = None  # track absolute minimum Vmin over entire session
 
 def update_voltage_samples(can_id, data, dlc, ts_string):
     global latest_soc
@@ -216,9 +217,20 @@ def update_voltage_samples(can_id, data, dlc, ts_string):
             "SoC": latest_soc,
             "Timestamp": ts_string
         }
+
+        # Keep a short rolling history for local UV/OV context
         last_v_samples.append(sample)
         if len(last_v_samples) > 20:
             last_v_samples.pop(0)
+
+        # Track absolute minimum Vmin across entire log for UV row when no UV error
+        global global_min_v_sample
+        if global_min_v_sample is None:
+            global_min_v_sample = sample
+        else:
+            prev_vmin = global_min_v_sample.get("Vmin")
+            if prev_vmin is None or (v_min is not None and v_min < prev_vmin):
+                global_min_v_sample = sample
 
 def compute_uv_context():
     recent = last_v_samples[-5:]
@@ -382,6 +394,11 @@ for name in DISPLAY_ORDER:
                     uv_ctx["Selected_Vmax"],
                     uv_ctx["Selected_SoC"]
                 )
+        elif global_min_v_sample is not None:
+            vmin = global_min_v_sample.get("Vmin")
+            vmax = global_min_v_sample.get("Vmax")
+            soc  = global_min_v_sample.get("SoC")
+            value_field = build_context_value(vmin, vmax, soc)
     elif name == "OV_ERROR":
         ov_ctx = instances[0].get("OV_Context") if instances else None
         if ov_ctx:
