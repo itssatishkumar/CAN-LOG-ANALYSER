@@ -1,3 +1,5 @@
+
+import sys
 import sys
 import os
 import subprocess
@@ -5,6 +7,7 @@ import json
 import csv
 import math
 import time
+import re
 from typing import Dict, Optional, Set
 
 from PySide6.QtWidgets import (
@@ -236,6 +239,7 @@ class CANLogDebugger(QWidget):
         self.setMinimumSize(1250, 780)
 
         self.selected_file_path = ""
+        self.logs_last_output_path: Optional[str] = None
         self.script_dir = os.path.dirname(os.path.realpath(__file__))
         self.default_tests_folder = os.path.join(self.script_dir, "TRC TEST CASES")
         self.tests_folder_overrides = {
@@ -827,27 +831,55 @@ class CANLogDebugger(QWidget):
                 QMessageBox.warning(self, "Error", f"logs_organised.py not found:\n{logs_script}")
                 return
 
-        # Button while running
+        self.logs_last_output_path = None
+
         self.make_btn.setText("RUNNING....Pls Wait")
         self.make_btn_animating = True
-        self._update_title_glow()  # apply immediate animated look
+        self._update_title_glow()
         self.make_btn.setEnabled(False)
 
         # Run script
         self.logs_proc = QProcess(self)
         self.logs_proc.setWorkingDirectory(self.script_dir)
 
-        # When finished
         self.logs_proc.finished.connect(self.on_logs_finished)
+        self.logs_proc.readyReadStandardOutput.connect(self._on_logs_stdout)
 
         self.logs_proc.start(sys.executable, [logs_script])
 
     def on_logs_finished(self):
-        # Button becomes status label + retry
         self.make_btn_animating = False
         self.make_btn.setText("LOGS ARE ORGANISED ✅, RETRY ?")
         self.make_btn.setStyleSheet("background-color: #28A745; color: white; font-weight: bold;")
         self.make_btn.setEnabled(True)
+
+        if not self.logs_last_output_path:
+            marker = os.path.join(self.script_dir, "last_merged_trc.txt")
+            if os.path.exists(marker):
+                try:
+                    candidate = open(marker, "r", encoding="utf-8", errors="ignore").read().strip()
+                except Exception:
+                    candidate = ""
+                if candidate and os.path.exists(candidate):
+                    self.logs_last_output_path = candidate
+
+    def _on_logs_stdout(self):
+        """Capture logs_organised.py stdout and remember the FINAL output path."""
+        proc = getattr(self, "logs_proc", None)
+        if not proc:
+            return
+
+        try:
+            data = proc.readAllStandardOutput().data().decode("utf-8", errors="ignore")
+        except Exception:
+            return
+
+        for line in data.splitlines():
+            m = re.search(r"Output file saved as:\s*(.+)", line)
+            if m:
+                candidate = m.group(1).strip()
+                if candidate:
+                    self.logs_last_output_path = candidate
 
     # ======================================================
     # FILE BROWSE
@@ -860,10 +892,8 @@ class CANLogDebugger(QWidget):
         if self.scan_tasks == 0:
             self.restore_browse_button()
 
-    def on_browse(self):
-        ft = self.ft_combo.currentText()
-        path, _ = QFileDialog.getOpenFileName(self, "Select File", "", f"{ft} Files (*{ft})")
-
+    def _handle_file_selected(self, path: str):
+        """Common handler when a TRC/log file is chosen."""
         if not path:
             return
 
@@ -886,6 +916,26 @@ class CANLogDebugger(QWidget):
         else:
             self.reset_vcu_fields()
             self.reset_bms_fields()
+
+    def on_browse(self):
+        ft = self.ft_combo.currentText()
+        initial_dir = ""
+        if self.logs_last_output_path:
+            initial_dir = os.path.dirname(self.logs_last_output_path)
+        elif self.selected_file_path:
+            initial_dir = os.path.dirname(self.selected_file_path)
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select File",
+            initial_dir,
+            f"{ft} Files (*{ft})",
+        )
+
+        if not path:
+            return
+
+        self._handle_file_selected(path)
 
     def _start_fw_scan(self, path: str):
         thread = FWCheckerThread(path)
