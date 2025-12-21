@@ -450,6 +450,12 @@ class CANLogDebugger(QWidget):
         # ---------------------------------------------------
         # RIGHT TABLE PANEL
         # ---------------------------------------------------
+        # Columns:
+        # 0 = TEST CASE (with per-test RUN button)
+        # 1 = STATUS
+        # 2 = View Results
+        # 3 = View Graph
+        # 4 = Result (PASS/FAIL)
         table = QTableWidget(len(TEST_CASES), 5)
         table.setHorizontalHeaderLabels(
             ["TEST CASE", "STATUS", "View Results", "View Graph", "Result"]
@@ -466,19 +472,44 @@ class CANLogDebugger(QWidget):
         for c in range(5):
             header.setSectionResizeMode(c, QHeaderView.Fixed)
 
-        total_ratio = 9 + 5 + 5 + 5 + 3
+        total_ratio = 11 + 5 + 5 + 5 + 3
         total_width = 900
 
-        table.setColumnWidth(0, int(total_width * (9 / total_ratio)))
+        table.setColumnWidth(0, int(total_width * (11 / total_ratio)))
         table.setColumnWidth(1, int(total_width * (5 / total_ratio)))
         table.setColumnWidth(2, int(total_width * (5 / total_ratio)))
         table.setColumnWidth(3, int(total_width * (5 / total_ratio)))
         table.setColumnWidth(4, int(total_width * (3 / total_ratio)))
 
         for i, name in enumerate(TEST_CASES):
+            # Base item for data/sorting only; visual handled by widget below
             name_item = QTableWidgetItem(name)
-            self._style_testcase_cell(name_item)
             table.setItem(i, 0, name_item)
+
+            # Composite widget in TEST CASE column: label + RUN button
+            cell_widget = QWidget()
+            cell_widget.setStyleSheet("background:white;")
+            h_layout = QHBoxLayout(cell_widget)
+            h_layout.setContentsMargins(4, 0, 4, 0)
+            h_layout.setSpacing(6)
+
+            lbl = QLabel(name)
+            lbl.setStyleSheet("color:#1FA37A; font-weight:bold; background:white;")
+            h_layout.addWidget(lbl, 1)
+
+            btn_run = QPushButton("▶")
+            btn_run.setToolTip("Run only this test case")
+            btn_run.setStyleSheet(
+                "QPushButton { background:#28A745; color:white; font-weight:bold; border-radius:12px; "
+                "min-width:24px; max-width:24px; min-height:24px; max-height:24px; }"
+                "QPushButton:pressed { background:#1f7a33; }"
+            )
+            btn_run.clicked.connect(lambda _, r=i: self.start_single_test(r))
+            btn_run.setFocusPolicy(Qt.NoFocus)
+            h_layout.addWidget(btn_run, 0, Qt.AlignRight | Qt.AlignVCenter)
+
+            table.setCellWidget(i, 0, cell_widget)
+
             status_item = QTableWidgetItem("Not Run")
             status_item.setTextAlignment(Qt.AlignCenter)
             table.setItem(i, 1, status_item)
@@ -771,6 +802,17 @@ class CANLogDebugger(QWidget):
                     except Exception:
                         pass
 
+    def _clear_outputs_for_row(self, row: int):
+        """Delete result/summary/graph files for a single test case row."""
+        files = self.output_files.get(row, {})
+        for kind in ("result", "summary", "graph"):
+            path = self._get_output_file_path(row, kind)
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+
     # ======================================================
     # MAKE LOGS ORGANISED
     # ======================================================
@@ -1052,6 +1094,15 @@ class CANLogDebugger(QWidget):
             QMessageBox.warning(self, "Error", "Browse a file first")
             return
 
+        # Do not start RUN ALL if any tests are already running (single or batch)
+        if any(p.state() != QProcess.NotRunning for p in self.processes.values()):
+            QMessageBox.information(
+                self,
+                "Info",
+                "Some tests are already running. Please wait for them to finish before running all.",
+            )
+            return
+
         # Clear previously generated outputs before running everything (configurable)
         if CLEAR_OUTPUTS_ON_RUN_ALL:
             self._clear_all_outputs()
@@ -1110,6 +1161,60 @@ class CANLogDebugger(QWidget):
             self.run_all_btn.setText("RUN ALL TEST CASES")
             self.run_all_btn.setStyleSheet("background:#28A745; color:white; font-weight:bold;")
             self.run_all_animating = False
+
+    # ======================================================
+    # RUN SINGLE TEST CASE
+    # ======================================================
+    def start_single_test(self, row: int):
+        """Run only the selected test case, with live progress updates."""
+        if not self.selected_file_path:
+            QMessageBox.warning(self, "Error", "Browse a file first")
+            return
+
+        # Prevent re-running if this row is already in progress
+        proc = self.processes.get(row)
+        if proc and proc.state() != QProcess.NotRunning:
+            QMessageBox.information(self, "Info", "This test is already running.")
+            return
+
+        # Optionally clear previous outputs for just this test
+        if CLEAR_OUTPUTS_ON_RUN_ALL:
+            self._clear_outputs_for_row(row)
+
+        # Reset status/result cells for this row
+        status_item = QTableWidgetItem("Not Run")
+        status_item.setTextAlignment(Qt.AlignCenter)
+        self.test_table.setItem(row, 1, status_item)
+        result_item = QTableWidgetItem("N/A")
+        result_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.test_table.setItem(row, 4, result_item)
+
+        folder_path, script_path = self._get_test_script_paths(row)
+        if not folder_path or not os.path.exists(script_path):
+            self._set_colored_cell(row, 1, "Missing/Incorrect", "#FF0000")
+            return
+
+        python = sys.executable
+
+        # Track as pending so the result cell updates automatically
+        self.pending_result_rows.add(row)
+        self._ensure_result_timer_running()
+
+        # Reset row-specific running state and mark as running
+        self.running_rows.discard(row)
+        self.running_started_at.pop(row, None)
+        self.running_pct.pop(row, None)
+        self._mark_row_running(row)
+
+        proc = QProcess(self)
+        proc.setWorkingDirectory(folder_path)
+
+        proc.finished.connect(lambda exitCode, _status, r=row: self.on_test_finished(r, exitCode))
+        proc.errorOccurred.connect(lambda _e, r=row: self.on_test_error(r, _e))
+        proc.readyReadStandardOutput.connect(lambda r=row: self._on_test_stdout(r))
+
+        proc.start(python, [script_path, self.selected_file_path])
+        self.processes[row] = proc
 
     def on_test_finished(self, row, exitCode):
         self.running_rows.discard(row)
