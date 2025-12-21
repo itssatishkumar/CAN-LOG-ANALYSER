@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
+import sys
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog
 
-# ------------ REGEX PATTERNS ------------
 RE_STARTTIME_SEC = re.compile(r"^\s*;\$STARTTIME\s*=\s*([0-9.]+)")
 RE_STARTTIME_STR = re.compile(r"Start time:\s*(.+)")
 RE_FRAME = re.compile(
@@ -17,8 +17,6 @@ MONTHS = {
     7: "JUL", 8: "AUG", 9: "SEP", 10: "OCT", 11: "NOV", 12: "DEC"
 }
 
-# ------------ MODE KEYWORDS (case-insensitive, order matters: longer first) ------------
-# These are the "modes" you care about. We will detect them even if placed anywhere in the filename.
 MODE_PATTERNS = [
     ("Thunder City Max", re.compile(r"\bTHUNDER\s+CITY\s+MAX\b", re.IGNORECASE)),
     ("Thunder City",     re.compile(r"\bTHUNDER\s+CITY\b", re.IGNORECASE)),
@@ -30,13 +28,11 @@ MODE_PATTERNS = [
     ("Eco",              re.compile(r"\bECO\b", re.IGNORECASE)),
 ]
 
-# Words that mean "not part of mode phrase" (for heuristic fallback)
 STOP_WORDS = {
     "MBMS", "HC", "LFP", "MARVEL", "DISCHARGING", "CHARGING",
     "LOG", "TRC", "CSV", "DECODED", "DECODE", "FILE", "FINAL", "MERGED"
 }
 
-# ------------ HELPERS ------------
 def _parse_start_datetime(text: str) -> datetime:
     cleaned = text.strip().replace(".0", "")
 
@@ -297,9 +293,28 @@ def merge_trcs(filepaths):
 # ------------ GUI FILE PICKER ------------
 def main():
     tk.Tk().withdraw()
+    initial_dir = None
+    if len(sys.argv) > 1:
+        try:
+            candidate = Path(sys.argv[1]).expanduser()
+            if candidate.is_dir():
+                initial_dir = str(candidate)
+        except Exception:
+            initial_dir = None
+
+    if initial_dir is None:
+        home = Path.home()
+        for d in [home / "Downloads", home / "Desktop", home]:
+            if d.is_dir():
+                initial_dir = str(d)
+                break
+        if initial_dir is None:
+            initial_dir = str(Path.cwd())
+
     filepaths = filedialog.askopenfilenames(
         title="Select TRC files to merge",
-        filetypes=[("TRC files", "*.trc")]
+        filetypes=[("TRC files", "*.trc")],
+        initialdir=initial_dir,
     )
 
     if not filepaths:
