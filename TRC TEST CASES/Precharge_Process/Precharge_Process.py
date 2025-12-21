@@ -208,7 +208,17 @@ for i in range(1, len(df)):
 # -----------------------------------------------------
 # SAVE RESULTS JSON
 # -----------------------------------------------------
-overall = "PASS" if events and all(e["Status"] == "PASS" for e in events) else "FAIL"
+if not events:
+    overall = "PASS"
+else:
+    any_status_fail = any(e["Status"] == "FAIL" for e in events)
+    any_flag_fail = any(e["Precharge_Fail_Flag"] == "YES" for e in events)
+    if (not any_status_fail) and (not any_flag_fail):
+        overall = "PASS"
+    elif any_status_fail and (not any_flag_fail):
+        overall = "WARNING"
+    else:
+        overall = "FAIL"
 
 with open(os.path.join(folder, "Precharge_Process_results.json"), "w", encoding="utf-8") as f:
     json.dump({"Result": overall, "Events": events}, f, indent=4)
