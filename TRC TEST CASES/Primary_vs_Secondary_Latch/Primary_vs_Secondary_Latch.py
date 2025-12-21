@@ -598,6 +598,29 @@ def main():
     # Detect charge sessions - inactive if 18FF50E5 not seen for 3s
     charge_sessions = detect_charge_sessions(ff18_list)
 
+    if not charge_sessions:
+        results = {"Result": "PASS"}
+        summary = {
+            "test_name": "Primary vs Secondary Latch",
+            "trc_file": os.path.basename(trc),
+            "latch_type": "NA",
+            "vmin_at_latch_mv": None,
+            "vmax_peak_mv": None,
+            "total_capacity_ah": 0.0,
+            "total_duration": "0hr,0min,0s",
+            "result": "PASS",
+            "reason": "No 18FF50E5 messages detected; treated as PASS by default",
+        }
+
+        with open(out / "Primary_vs_Secondary_Latch_results.json", "w") as f:
+            json.dump(results, f, indent=2)
+
+        with open(out / "Primary_vs_Secondary_Latch_summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
+
+        print("PROGRESS 100.0", flush=True)
+        return
+
     rows, total_ah, total_time = [], 0.0, timedelta()
     latch_row = None
 
