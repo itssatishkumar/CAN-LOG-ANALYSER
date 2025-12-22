@@ -325,7 +325,6 @@ def merge_tail_active_windows(rows, threshold_soc=90.0):
             idx -= 1
         else:
             break
-
     if len(suffix_indices) <= 1:
         return rows
 
@@ -489,7 +488,7 @@ def build_charge_windows(soc_list, current_list, temp_list, start_ts, end_ts, ch
 def draw_charging_table(
     rows,
     latch_row,
-    initial_to_final,
+    initial_to_final_row,
     total_time,
     total_ah,
     latch_type,
@@ -543,7 +542,8 @@ def draw_charging_table(
             _, sv, ev, dur, ah, tavg = row_data
             draw_row([f"{sv:.2f}% → {ev:.2f}%", dur, f"{ah:.2f} Ah", f"{tavg:.1f} C" if tavg else ""])
 
-    draw_row(["Initial → Final SoC", initial_to_final, "", ""], bg="#e6f2ff")
+    # Initial  Final SoC row (duration, total Ah, avg temp)
+    draw_row(initial_to_final_row, bg="#e6f2ff")
 
     if latch_row:
         draw_row(latch_row, bg="#fce88c")
@@ -625,7 +625,12 @@ def main():
         draw_charging_table(
             rows=[],
             latch_row=None,
-            initial_to_final="0hr,0min,0s",
+            initial_to_final_row=[
+                "Initial → Final SoC",
+                "0hr,0min,0s",
+                "0.00 Ah",
+                "",
+            ],
             total_time="0hr,0min,0s",
             total_ah=0.0,
             latch_type="NA",
@@ -668,7 +673,12 @@ def main():
         draw_charging_table(
             rows=[],
             latch_row=None,
-            initial_to_final="0hr,0min,0s",
+            initial_to_final_row=[
+                "Initial → Final SoC",
+                "0hr,0min,0s",
+                "0.00 Ah",
+                "",
+            ],
             total_time="0hr,0min,0s",
             total_ah=0.0,
             latch_type="NA",
@@ -703,6 +713,29 @@ def main():
         timedelta(0),
     )
 
+    # Capacity exchange between Initial→Final SoC (ACTIVE windows only)
+    initial_to_final_ah = sum(row[4] for row in rows if row[0] == "ACTIVE")
+
+    # Average temperature over ACTIVE windows, weighted by duration
+    temp_weighted_sum = 0.0
+    temp_total_seconds = 0.0
+    for row in rows:
+        if row[0] != "ACTIVE":
+            continue
+        tavg = row[5]
+        if tavg is None:
+            continue
+        dur_td = parse_duration_str(row[3])
+        secs = dur_td.total_seconds()
+        if secs <= 0:
+            continue
+        temp_weighted_sum += tavg * secs
+        temp_total_seconds += secs
+
+    initial_to_final_tavg = (
+        temp_weighted_sum / temp_total_seconds if temp_total_seconds > 0 else None
+    )
+
     # Total Ah = sum of capacity exchange from both ACTIVE and INACTIVE windows
     total_ah = sum(row[4] for row in rows)
 
@@ -719,6 +752,19 @@ def main():
 
     # Initial→Final SoC duration excludes INACTIVE sessions
     initial_to_final = format_duration(active_duration_td)
+
+    # Build Initial→Final SoC row for the table
+    init_ah_str = f"{initial_to_final_ah:.2f} Ah" if initial_to_final_ah is not None else ""
+    init_tavg_str = (
+        f"{initial_to_final_tavg:.1f} C" if initial_to_final_tavg is not None else ""
+    )
+
+    initial_to_final_row = [
+        "Initial → Final SoC",
+        initial_to_final,
+        init_ah_str,
+        init_tavg_str,
+    ]
 
     # TOTAL duration = active charging duration + 100%→True Latch duration (if any)
     total_time_td = active_duration_td + latch_duration_td
@@ -749,10 +795,16 @@ def main():
         json.dump(summary, f, indent=2)
 
     draw_charging_table(
-        rows, latch_row, initial_to_final,
-        total_time, total_ah,
-        latch_type, vmin_at_latch, vmax_peak,
-        result, out / "Primary_vs_Secondary_Latch_plot.png"
+        rows,
+        latch_row,
+        initial_to_final_row,
+        total_time,
+        total_ah,
+        latch_type,
+        vmin_at_latch,
+        vmax_peak,
+        result,
+        out / "Primary_vs_Secondary_Latch_plot.png",
     )
 
     print("PROGRESS 100.0", flush=True)
@@ -786,7 +838,12 @@ if __name__ == "__main__":
                 draw_charging_table(
                     rows=[],
                     latch_row=None,
-                    initial_to_final="0hr,0min,0s",
+                    initial_to_final_row=[
+                        "Initial → Final SoC",
+                        "0hr,0min,0s",
+                        "0.00 Ah",
+                        "",
+                    ],
                     total_time="0hr,0min,0s",
                     total_ah=0.0,
                     latch_type="NA",
