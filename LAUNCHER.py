@@ -1527,6 +1527,8 @@ class CANLogDebugger(QWidget):
         generator_script = os.path.join(self.script_dir, "Generate_Tracker.py")
 
         meta_payload = {
+            # Vehicle / file name shown at top of tracker
+            "VEHICLE NAME": os.path.basename(self.selected_file_path),
             "BMS HW VERSION": self.tx_hw.text(),
             "BMS FIRMWARE": self.tx_fw.text(),
             "BMS CONFIG ID": self.tx_cfg.text(),
@@ -1566,7 +1568,25 @@ class CANLogDebugger(QWidget):
             QMessageBox.warning(self, "Tracker", err_msg)
             return
 
-        QMessageBox.information(self, "Tracker", f"Tracker generated:\n{docx_path}")
+        # Ask user if they want to open the generated report
+        reply = QMessageBox.question(
+            self,
+            "Tracker",
+            f"Tracker generated:\n{docx_path}\n\nDo you want to open this report?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+
+        if reply == QMessageBox.Yes:
+            try:
+                if sys.platform.startswith("win"):
+                    os.startfile(docx_path)  # type: ignore[attr-defined]
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", docx_path])
+                else:
+                    subprocess.Popen(["xdg-open", docx_path])
+            except Exception as e:
+                QMessageBox.warning(self, "Tracker", f"Failed to open report:\n{e}")
 
 # -------------------------------------------------------
 # MAIN
