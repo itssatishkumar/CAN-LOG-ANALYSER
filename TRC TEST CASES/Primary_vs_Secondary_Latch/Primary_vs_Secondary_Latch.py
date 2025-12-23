@@ -1,3 +1,4 @@
+
 import re
 import struct
 import sys
@@ -128,20 +129,16 @@ def parse_trc(fp, progress_cb=None, total_lines=None):
             if m:
                 ts = parse_ts(m.group(1))
                 d = m.group(3).split()
-                if ts and len(d) >= 6:
-                    bms_state = int(d[4], 16)  # Byte 5: BMS State (0 = SoC INVALID, !=0 = SoC VALID)
-                    latch = int(d[5], 16)       # Byte 6: Full Charge Flag (1 = TRUE LATCH)
+                if ts and len(d) >= 5:
+                    latch = int(d[4], 16)
                     latch_list.append((ts, latch))
 
-                    # Append SoC only when BMS State != 0 (SoC is valid)
-                    if bms_state != 0:
+                    if latch != 0:
                         soc = (int(d[0], 16) | (int(d[1], 16) << 8)) * 0.01
-                        
-                        # When TRUE LATCH occurs, force SoC = 100.0 and tag it
-                        if latch == 1:
-                            soc_list.append((ts, 100.0, "LATCH"))
-                        else:
-                            soc_list.append((ts, soc))
+                        soc_list.append((ts, soc))
+
+                    if latch == 1:
+                        soc_list.append((ts, 100.0, "LATCH"))
 
             m = RE_014E.match(line)
             if m:
