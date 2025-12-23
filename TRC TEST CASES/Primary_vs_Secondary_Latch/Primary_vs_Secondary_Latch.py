@@ -24,6 +24,7 @@ from trc_utils import fast_datetime_from_str
 PROGRESS_STEP = 0.5
 MIN_SOC_STEP = 0.01
 SOC_LOCK = 99.99
+LOG_GAP_THRESHOLD_SEC = 30.0  # treat gaps larger than this as recording gaps
 def progress_by_steps(start, end, step=0.5):
     last = start
     span = end - start
@@ -49,7 +50,14 @@ RE_014E = re.compile(
     r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+014E\s+\d+\s+(.+)"
 )
 RE_18FF = re.compile(
-    r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+18FF50E5\s+8\s+(.+)"
+    # Be tolerant to small format changes (Rx/Tx, DLC, extra suffix like 'x')
+    r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+\w+\s+18FF50E5\w*\s+\d+\s+.*",
+    re.IGNORECASE,
+)
+
+# Generic timestamp matcher used as a fallback when scanning for 18FF50E5
+RE_TS_ONLY = re.compile(
+    r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)"
 )
 RE_012C = re.compile(
     r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+012C\s+8\s+(.+)"
@@ -88,11 +96,25 @@ def parse_trc(fp, progress_cb=None, total_lines=None):
     ff18_list = []
     vmin_list = []
     vmax_list = []
+    log_gaps = []
+
+    last_any_ts = None
 
     with open(fp, "r", encoding="utf-8", errors="ignore") as f:
         for i, line in enumerate(f, 1):
             if progress_cb and total_lines:
                 progress_cb(i / total_lines)
+
+            # Track timestamp on every line to detect large recording gaps
+            m_ts_any = RE_TS_ONLY.match(line)
+            if m_ts_any:
+                any_ts = parse_ts(m_ts_any.group(1))
+                if any_ts and last_any_ts:
+                    gap = (any_ts - last_any_ts).total_seconds()
+                    if gap > LOG_GAP_THRESHOLD_SEC:
+                        log_gaps.append((last_any_ts, any_ts))
+                if any_ts:
+                    last_any_ts = any_ts
 
             m = RE_110.match(line)
             if m:
@@ -131,6 +153,15 @@ def parse_trc(fp, progress_cb=None, total_lines=None):
                 ts = parse_ts(m.group(1))
                 if ts:
                     ff18_list.append(ts)
+            # Fallback: if the line contains 18FF50E5 but didn't match the
+            # detailed regex (e.g. slightly different format), still record
+            # its timestamp using a generic timestamp matcher.
+            elif "18FF50E5" in line:
+                m_ts = RE_TS_ONLY.match(line)
+                if m_ts:
+                    ts = parse_ts(m_ts.group(1))
+                    if ts:
+                        ff18_list.append(ts)
 
             m = RE_012C.match(line)
             if m:
@@ -142,9 +173,27 @@ def parse_trc(fp, progress_cb=None, total_lines=None):
                     vmin_list.append((ts, vmin))
                     vmax_list.append((ts, vmax))
 
-    return soc_list, latch_list, current_list, temp_list, ff18_list, vmin_list, vmax_list
+    return soc_list, latch_list, current_list, temp_list, ff18_list, vmin_list, vmax_list, log_gaps
 
-def detect_charge_sessions(ff18_list, timeout_sec=3.0):
+
+def _gap_overlap_seconds(start_ts, end_ts, log_gaps):
+    """Total duration within [start_ts, end_ts] that falls inside recording gaps."""
+
+    if not log_gaps:
+        return 0.0
+
+    total = 0.0
+    for g_start, g_end in log_gaps:
+        if g_end <= start_ts or g_start >= end_ts:
+            continue
+        s = max(start_ts, g_start)
+        e = min(end_ts, g_end)
+        if e > s:
+            total += (e - s).total_seconds()
+    return total
+
+
+def detect_charge_sessions(ff18_list, log_gaps, timeout_sec=3.0):
     """Charging is inactive if 18FF50E5 is not seen for at least 3s"""
     if not ff18_list:
         return []
@@ -155,9 +204,15 @@ def detect_charge_sessions(ff18_list, timeout_sec=3.0):
     last = start
 
     for ts in ff18_list[1:]:
-        if (ts - last).total_seconds() > timeout_sec:
-            sessions.append((start, last))
-            start = ts
+        raw_gap = (ts - last).total_seconds()
+        if raw_gap > timeout_sec:
+            # Subtract any portions of this gap that are actually due to
+            # missing recording (large file time jumps). Those periods
+            # should not be treated as "18FF50E5 missing".
+            effective_gap = raw_gap - _gap_overlap_seconds(last, ts, log_gaps)
+            if effective_gap > timeout_sec:
+                sessions.append((start, last))
+                start = ts
         last = ts
 
     sessions.append((start, last))
@@ -246,22 +301,79 @@ def find_last_soc_before_100(soc_list, start_ts, first_100_ts):
     return last
 
 
-def classify_latch(latch_ts, vmin_list):
+def _v_window_around_latch(latch_ts, vmin_list, vmax_list, pre=3, post=3):
+    """Return (Vmin, Vmax) in a 7-sample window around latch.
+
+    The window is centered on the 0x012C sample closest in time to the
+    latch timestamp: 3 samples before and 3 after (total up to 7). The
+    final Vmax is the maximum within this window, and Vmin is taken from
+    the same sample as that Vmax.
+    """
+
+    if not latch_ts or not vmin_list or not vmax_list:
+        return None, None
+
+    n = min(len(vmin_list), len(vmax_list))
+    if n == 0:
+        return None, None
+
+    pairs = list(zip(vmin_list[:n], vmax_list[:n]))
+
+    # Find index of 0x012C sample closest in time to latch
+    def _time_diff_sec(i):
+        return abs((pairs[i][0][0] - latch_ts).total_seconds())
+
+    latch_idx = min(range(n), key=_time_diff_sec)
+
+    start = max(0, latch_idx - pre)
+    end = min(n - 1, latch_idx + post)
+
+    best_idx = start
+    best_vmax = pairs[start][1][1]
+
+    for i in range(start + 1, end + 1):
+        vmax_val = pairs[i][1][1]
+        if vmax_val > best_vmax:
+            best_vmax = vmax_val
+            best_idx = i
+
+    vmin_val = pairs[best_idx][0][1]
+    vmax_val = pairs[best_idx][1][1]
+
+    return int(vmin_val), int(vmax_val)
+
+
+def classify_latch(latch_ts, vmin_list, vmax_list):
+    """Classify latch as Primary/Secondary using Vmin around latch.
+
+    Uses the same 7-sample window logic as _v_window_around_latch and
+    bases the classification on the Vmin corresponding to the chosen
+    Vmax sample.
+    """
+
     if not latch_ts:
-        return "NA", None
+        return "NA", None, None
 
-    vmin = lookup_before(latch_ts, vmin_list)
-    if vmin and vmin[1] >= 3379:
-        return "Primary", int(vmin[1])
+    vmin_val, vmax_val = _v_window_around_latch(latch_ts, vmin_list, vmax_list)
 
-    return "Secondary", int(vmin[1]) if vmin else None
+    if vmin_val is None:
+        return "NA", None, vmax_val
+
+    if vmin_val >= 3379:
+        return "Primary", vmin_val, vmax_val
+
+    return "Secondary", vmin_val, vmax_val
 
 
 def decide_pass_fail(latch_ts, vmax_list, start_ts, end_ts, vmax_threshold=3535):
     """Determine PASS/FAIL based on Vmax and latch timing.
 
-    Rule: If Vmax exceeds vmax_threshold and no latch flag is seen *after*
-    that event, then FAIL. Otherwise, PASS.
+    Logic (unchanged): If Vmax exceeds vmax_threshold and no latch flag is
+    seen *after* that event, then FAIL. Otherwise, PASS.
+
+    NOTE: This uses the peak Vmax over the window internally for the
+    decision, but reporting of Vmax in tables/JSON is based on the
+    value *at latch time*, handled separately in ``main``.
     """
 
     vmax_peak = None
@@ -279,13 +391,13 @@ def decide_pass_fail(latch_ts, vmax_list, start_ts, end_ts, vmax_threshold=3535)
 
     # If we never crossed the threshold, it's a PASS regardless of latch
     if first_over_ts is None:
-        return "PASS", int(vmax_peak) if vmax_peak is not None else None
+        return "PASS"
 
     # We crossed the threshold; require a latch at or after that time
     if latch_ts and latch_ts >= first_over_ts:
-        return "PASS", int(vmax_peak) if vmax_peak is not None else None
+        return "PASS"
 
-    return "FAIL", int(vmax_peak) if vmax_peak is not None else None
+    return "FAIL"
 
 
 def format_duration(td):
@@ -593,12 +705,20 @@ def main():
 
     parse_cb = progress_by_steps(0, 100, PROGRESS_STEP)
 
-    soc_list, latch_list, current_list, temp_list, ff18_list, vmin_list, vmax_list = parse_trc(
-        trc, parse_cb, total_lines
-    )
+    (
+        soc_list,
+        latch_list,
+        current_list,
+        temp_list,
+        ff18_list,
+        vmin_list,
+        vmax_list,
+        log_gaps,
+    ) = parse_trc(trc, parse_cb, total_lines)
 
-    # Detect charge sessions - inactive if 18FF50E5 not seen for 3s
-    charge_sessions = detect_charge_sessions(ff18_list)
+    # Detect charge sessions - inactive if 18FF50E5 not seen for 3s,
+    # excluding long recording gaps from that inactivity logic.
+    charge_sessions = detect_charge_sessions(ff18_list, log_gaps)
 
     if not charge_sessions:
         result_value = "PASS"
@@ -770,8 +890,14 @@ def main():
     total_time_td = active_duration_td + latch_duration_td
     total_time = format_duration(total_time_td)
 
-    latch_type, vmin_at_latch = classify_latch(latch_ts, vmin_list)
-    result, vmax_peak = decide_pass_fail(latch_ts, vmax_list, first_soc_ts, final_soc_ts)
+    # Classify latch type and compute Vmin/Vmax in a 7-sample window
+    # (3 samples before and 3 after) around the latch.
+    latch_type, vmin_at_latch, vmax_at_latch = classify_latch(
+        latch_ts, vmin_list, vmax_list
+    )
+
+    # PASS/FAIL decision still uses peak Vmax over the window
+    result = decide_pass_fail(latch_ts, vmax_list, first_soc_ts, final_soc_ts)
 
     # Minimal results JSON: only PASS/FAIL
     results = {"Result": result}
@@ -781,7 +907,7 @@ def main():
         "trc_file": os.path.basename(trc),
         "latch_type": latch_type,
         "vmin_at_latch_mv": vmin_at_latch,
-        "vmax_peak_mv": vmax_peak,
+        "vmax_peak_mv": vmax_at_latch,
         "total_capacity_ah": round(total_ah, 2),
         "total_duration": total_time,
         "result": result
@@ -802,7 +928,7 @@ def main():
         total_ah,
         latch_type,
         vmin_at_latch,
-        vmax_peak,
+        vmax_at_latch,
         result,
         out / "Primary_vs_Secondary_Latch_plot.png",
     )
