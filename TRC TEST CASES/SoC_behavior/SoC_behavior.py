@@ -174,9 +174,9 @@ def detect_soc_stuck_odo(df, odo_events, min_km=3.0, max_soc_delta=1.0):
             continue
 
         soc_start = seg["SoC"].iloc[0]
-        soc_end = seg["SoC"].iloc[-1]
+        soc_range = float(seg["SoC"].max() - seg["SoC"].min())
 
-        if abs(soc_end - soc_start) < max_soc_delta:
+        if soc_range <= max_soc_delta:
             first_ts_full = seg["full_ts"].iloc[0]
             return True, round(soc_start, 2), first_ts_full
 
