@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 import json
 import struct
+from collections import defaultdict
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
@@ -150,13 +151,20 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
 # -----------------------------------------------------
 # ACTIVE INT THERM DETECTION (first 10s)
 # -----------------------------------------------------
-active_ntc = set()
+ntc_valid_count = defaultdict(int)
+
 for arr in raw_first_10s:
     for i, v in enumerate(arr):
-        if isinstance(v, int):
-            active_ntc.add(i)
+        # count only real, non-zero temperatures
+        if isinstance(v, int) and v != 0:
+            ntc_valid_count[i] += 1
 
-active_ntc = sorted(list(active_ntc))
+MIN_VALID_SAMPLES = 3   # simple, safe value
+
+active_ntc = sorted(
+    i for i, cnt in ntc_valid_count.items()
+    if cnt >= MIN_VALID_SAMPLES
+)
 
 if not active_ntc:
     print("ERROR: No active internal NTC detected in first 10 seconds!")
@@ -191,11 +199,13 @@ for i in range(1, len(df)):
 
     # ignore big time gaps
     if curr.ts - prev.ts >= MAX_TIME_GAP_MS:
+        for k in zero_streak:
+            zero_streak[k] = 0
         continue
 
     arr = curr.temps
     temps_valid = True
-    active_vals = []
+    vals_with_idx = []
 
     # Zero-streak rule for internal thermistors
     for ntc_idx in active_ntc:
@@ -210,13 +220,15 @@ for i in range(1, len(df)):
         else:
             zero_streak[ntc_idx] = 0
 
-        active_vals.append(val)
+        vals_with_idx.append((ntc_idx, val))
 
-    if not temps_valid or not active_vals:
+    if not temps_valid or not vals_with_idx:
         continue
 
-    tmax = max(active_vals)
-    tmin = min(active_vals)
+    vals = [v for _, v in vals_with_idx]
+
+    tmax = max(vals)
+    tmin = min(vals)
     imbalance = tmax - tmin
 
     # Track max imbalance
@@ -225,18 +237,18 @@ for i in range(1, len(df)):
         max_imbalance_ts = curr.full_ts
 
     # Outlier detection (internal therm)
-    median_val = sorted(active_vals)[len(active_vals)//2]
-    deviations = [abs(v - median_val) for v in active_vals]
-    max_dev_index = deviations.index(max(deviations))
-    outlier_idx = active_ntc[max_dev_index]
+    median_val = sorted(vals)[len(vals)//2]
+    deviations = [abs(v - median_val) for _, v in vals_with_idx]
+    max_i = deviations.index(max(deviations))
 
+    outlier_idx, outlier_val = vals_with_idx[max_i]
     outlier_name = f"IntTherm_{outlier_idx+1}"
 
     if imbalance > IMBALANCE_FAIL:
         fails.append({
             "Timestamp": curr.full_ts,
             "Outlier_NTC": outlier_name,
-            "Outlier_Temp": active_vals[max_dev_index],
+            "Outlier_Temp": outlier_val,
             "Imbalance": round(imbalance, 3)
         })
     elif imbalance > IMBALANCE_WARNING:
