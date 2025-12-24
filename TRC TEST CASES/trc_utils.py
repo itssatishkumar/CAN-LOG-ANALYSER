@@ -9,10 +9,6 @@ def progress_by_bytes(
     start: float = 0.0,
     end: float = 100.0,
 ) -> Callable[[int], None]:
-    """
-    Fast progress emitter based on file size instead of pre-counting lines.
-    Call the returned function with the number of bytes consumed for each chunk/line.
-    """
     try:
         total = os.path.getsize(path)
     except OSError:
@@ -41,10 +37,6 @@ def fast_parse_ts(
     time_str: str,
     ms_str: str,
 ) -> Tuple[datetime, float, str]:
-    """
-    Parse TRC date/time parts without strptime overhead.
-    Returns (datetime, timestamp_ms, normalized_ts_string).
-    """
     ms_norm = ms_str if len(ms_str) == 4 else ms_str + "0" if len(ms_str) == 3 else ms_str
     micro = int(ms_norm.ljust(6, "0")[:6])
 
@@ -61,11 +53,7 @@ def fast_parse_ts(
 
 
 def fast_datetime_from_str(ts_raw: str) -> Optional[datetime]:
-    """
-    Lightweight datetime parser for strings shaped like "dd-mm-YYYY HH:MM:SS(.mmm?)".
-    Normalizes the fractional part to 4 digits before constructing datetime.
-    """
-    ts_clean = ts_raw.strip().replace(".0", "")
+    ts_clean = ts_raw.strip()
     if " " not in ts_clean:
         return None
 
