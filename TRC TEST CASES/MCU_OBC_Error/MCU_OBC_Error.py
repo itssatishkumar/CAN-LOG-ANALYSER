@@ -258,6 +258,38 @@ for e in signals_result:
         e["Remark"] = uv_remark
         break
 
+
+def build_mcu_remark(t_ms):
+    if t_ms is None:
+        return ""
+    soc_ev = find_last_event(soc_events, t_ms)
+    cap_ev = find_last_event(cap_events, t_ms)
+    if soc_ev is None:
+        return ""
+
+    _, soc_pct, bms_state, *rest = soc_ev
+    vbat = rest[0] if rest else None
+    cap_volt = cap_ev[1] if cap_ev is not None else None
+
+    lines = [f"SoC={soc_pct:.2f}% (BMSS={int(bms_state)})"]
+    if cap_volt is not None:
+        lines.append(f"MCU_CAP_Volt={cap_volt} V")
+    if vbat is not None:
+        lines.append(f"Vbat={vbat:.1f} V")
+    return "\n".join(lines)
+
+
+for e in signals_result:
+    if not e["Name"].startswith("MCU_"):
+        continue
+    if e.get("Remark"):
+        continue
+    if e.get("Instance_Count", 0) <= 0:
+        continue
+    first_inst = e["Instances"][0] if e.get("Instances") else None
+    t_ms = first_inst.get("Start_ms") if isinstance(first_inst, dict) else None
+    e["Remark"] = build_mcu_remark(t_ms)
+
 # -----------------------------------------------------
 # OBC error severity (WARNING / FAIL based on BMSS)
 # -----------------------------------------------------
