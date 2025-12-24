@@ -1,3 +1,4 @@
+
 import re
 import struct
 import sys
@@ -25,17 +26,6 @@ INACTIVE_GAP_SEC = 5.0
 
 
 def get_charge_session_bounds(ff18_list, latch_list, trc_end_ts=None):
-    """Determine a single charge session [start, end].
-
-    Rules (per spec):
-    - If there is no 18FF50E5 (ff18_list empty) -> None
-    - Session start is the first 18FF50E5 timestamp
-    - Session end is the first latch==1 timestamp occurring at/after session start,
-      otherwise the last 18FF50E5 timestamp.
-
-    trc_end_ts is accepted for compatibility but is intentionally not used.
-    """
-
     if not ff18_list:
         return None
 
@@ -54,11 +44,6 @@ def get_charge_session_bounds(ff18_list, latch_list, trc_end_ts=None):
 
 
 def build_charge_intervals(ff18_list, session_start, session_end, inactive_gap=INACTIVE_GAP_SEC):
-    """Build non-overlapping ACTIVE / INACTIVE intervals.
-
-    ACTIVE continues until FF18 is missing for > inactive_gap seconds.
-    """
-
     if session_start is None or session_end is None or session_end <= session_start:
         return []
 
@@ -95,8 +80,6 @@ def build_charge_intervals(ff18_list, session_start, session_end, inactive_gap=I
 
 
 def is_active_charging(ts, intervals):
-    """Return True if ts falls within any ACTIVE interval."""
-
     for state, s, e in intervals:
         if state == "ACTIVE" and s <= ts < e:
             return True
@@ -107,8 +90,6 @@ def is_active_charging(ts, intervals):
 
 
 def _intervals_to_active_sessions(intervals):
-    """Convert intervals to the (start,end) list expected by build_charge_windows."""
-
     return [(s, e) for state, s, e in intervals if state == "ACTIVE" and e > s]
 def progress_by_steps(start, end, step=0.5):
     last = start
@@ -355,13 +336,6 @@ def find_last_soc_before_100(soc_list, start_ts, first_100_ts):
 
 
 def _v_window_around_latch(latch_ts, vmin_list, vmax_list, pre=5, post=5):
-    """Return (Vmin, Vmax) in an 11-sample window around latch.
-
-    Window definition (per requirement): take 5 0x012C samples before the
-    latch-adjacent sample and 5 after (total up to 11). Pick the maximum
-    Vmax within that window; Vmin is taken from the same sample.
-    """
-
     if not latch_ts or not vmin_list or not vmax_list:
         return None, None
 
@@ -401,13 +375,6 @@ def _v_window_around_latch(latch_ts, vmin_list, vmax_list, pre=5, post=5):
 
 
 def classify_latch(latch_ts, vmin_list, vmax_list):
-    """Classify latch as Primary/Secondary using Vmin around latch.
-
-    Uses the 11-sample window logic from _v_window_around_latch (5 before,
-    latch-adjacent, 5 after) and bases the classification on the Vmin
-    corresponding to the chosen Vmax sample.
-    """
-
     if not latch_ts:
         return "NA", None, None
 
@@ -458,16 +425,6 @@ def last_active_v_pair(vmin_list, vmax_list, intervals, session_start_ts, sessio
 
 
 def decide_pass_fail(latch_ts, vmax_list, start_ts, end_ts, vmax_threshold=3535):
-    """Determine PASS/FAIL based on Vmax and latch timing.
-
-    Logic (unchanged): If Vmax exceeds vmax_threshold and no latch flag is
-    seen *after* that event, then FAIL. Otherwise, PASS.
-
-    NOTE: This uses the peak Vmax over the window internally for the
-    decision, but reporting of Vmax in tables/JSON is based on the
-    value *at latch time*, handled separately in ``main``.
-    """
-
     vmax_peak = None
     first_over_ts = None
 
@@ -509,7 +466,6 @@ def format_duration(td):
 
 
 def parse_duration_str(s):
-    """Parse duration like '4hr,47min,36s' into timedelta"""
     try:
         h_part, m_part, s_part = s.split(",")
         h = int(h_part.replace("hr", ""))
@@ -521,11 +477,6 @@ def parse_duration_str(s):
 
 
 def merge_tail_active_windows(rows, threshold_soc=90.0):
-    """Merge final consecutive ACTIVE windows above threshold_soc into one.
-
-    Example: ACTIVE 81.8→91.8, ACTIVE 91.8→99.9, ACTIVE 99.9→100
-    becomes ACTIVE 81.8→91.8, ACTIVE 91.8→100.
-    """
     if not rows:
         return rows
 
