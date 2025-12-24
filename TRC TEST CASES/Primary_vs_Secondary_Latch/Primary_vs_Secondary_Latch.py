@@ -1,4 +1,3 @@
-
 import re
 import struct
 import sys
@@ -12,10 +11,6 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
-
-# =========================================================
-# PATH SETUP
-# =========================================================
 BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.append(str(BASE_DIR))
@@ -25,7 +20,96 @@ from trc_utils import fast_datetime_from_str
 PROGRESS_STEP = 0.5
 MIN_SOC_STEP = 0.01
 SOC_LOCK = 99.99
-LOG_GAP_THRESHOLD_SEC = 30.0  # treat gaps larger than this as recording gaps
+LOG_GAP_THRESHOLD_SEC = 30.0
+INACTIVE_GAP_SEC = 5.0
+
+
+def get_charge_session_bounds(ff18_list, latch_list, trc_end_ts=None):
+    """Determine a single charge session [start, end].
+
+    Rules (per spec):
+    - If there is no 18FF50E5 (ff18_list empty) -> None
+    - Session start is the first 18FF50E5 timestamp
+    - Session end is the first latch==1 timestamp occurring at/after session start,
+      otherwise the last 18FF50E5 timestamp.
+
+    trc_end_ts is accepted for compatibility but is intentionally not used.
+    """
+
+    if not ff18_list:
+        return None
+
+    start_ts = min(ff18_list)
+
+    for ts, v in latch_list:
+        if ts >= start_ts and v == 1:
+            return (start_ts, ts)
+
+    last_ff18 = max(ff18_list)
+
+    if len(ff18_list) == 1 and trc_end_ts and trc_end_ts > last_ff18:
+        return (start_ts, trc_end_ts)
+
+    return (start_ts, last_ff18)
+
+
+def build_charge_intervals(ff18_list, session_start, session_end, inactive_gap=INACTIVE_GAP_SEC):
+    """Build non-overlapping ACTIVE / INACTIVE intervals.
+
+    ACTIVE continues until FF18 is missing for > inactive_gap seconds.
+    """
+
+    if session_start is None or session_end is None or session_end <= session_start:
+        return []
+
+    ff18 = sorted(ts for ts in ff18_list if session_start <= ts <= session_end)
+    intervals = []
+
+    cur = session_start
+    active_until = None
+
+    for ts in ff18:
+        if active_until is None:
+            active_until = ts + timedelta(seconds=inactive_gap)
+            cur = ts
+            continue
+
+        if ts <= active_until:
+            active_until = ts + timedelta(seconds=inactive_gap)
+        else:
+            intervals.append(("ACTIVE", cur, active_until))
+            intervals.append(("INACTIVE", active_until, ts))
+            active_until = ts + timedelta(seconds=inactive_gap)
+            cur = ts
+
+    if active_until:
+        end_active = min(active_until, session_end)
+        intervals.append(("ACTIVE", cur, end_active))
+        if end_active < session_end:
+            intervals.append(("INACTIVE", end_active, session_end))
+    else:
+        intervals.append(("INACTIVE", session_start, session_end))
+
+    intervals.sort(key=lambda x: x[1])
+    return intervals
+
+
+def is_active_charging(ts, intervals):
+    """Return True if ts falls within any ACTIVE interval."""
+
+    for state, s, e in intervals:
+        if state == "ACTIVE" and s <= ts < e:
+            return True
+    for state, s, e in intervals:
+        if state == "INACTIVE" and s <= ts < e:
+            return False
+    return False
+
+
+def _intervals_to_active_sessions(intervals):
+    """Convert intervals to the (start,end) list expected by build_charge_windows."""
+
+    return [(s, e) for state, s, e in intervals if state == "ACTIVE" and e > s]
 def progress_by_steps(start, end, step=0.5):
     last = start
     span = end - start
@@ -51,12 +135,10 @@ RE_014E = re.compile(
     r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+014E\s+\d+\s+(.+)"
 )
 RE_18FF = re.compile(
-    # Be tolerant to small format changes (Rx/Tx, DLC, extra suffix like 'x')
-    r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+\w+\s+18FF50E5\w*\s+\d+\s+.*",
+    r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+).*?\b18FF50E5\b",
     re.IGNORECASE,
 )
 
-# Generic timestamp matcher used as a fallback when scanning for 18FF50E5
 RE_TS_ONLY = re.compile(
     r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)"
 )
@@ -105,8 +187,6 @@ def parse_trc(fp, progress_cb=None, total_lines=None):
         for i, line in enumerate(f, 1):
             if progress_cb and total_lines:
                 progress_cb(i / total_lines)
-
-            # Track timestamp on every line to detect large recording gaps
             m_ts_any = RE_TS_ONLY.match(line)
             if m_ts_any:
                 any_ts = parse_ts(m_ts_any.group(1))
@@ -154,15 +234,13 @@ def parse_trc(fp, progress_cb=None, total_lines=None):
                 ts = parse_ts(m.group(1))
                 if ts:
                     ff18_list.append(ts)
-            # Fallback: if the line contains 18FF50E5 but didn't match the
-            # detailed regex (e.g. slightly different format), still record
-            # its timestamp using a generic timestamp matcher.
-            elif "18FF50E5" in line:
-                m_ts = RE_TS_ONLY.match(line)
-                if m_ts:
-                    ts = parse_ts(m_ts.group(1))
-                    if ts:
-                        ff18_list.append(ts)
+            elif ("18FF50E5" in line) or ("18ff50e5" in line):
+                if any(tok.upper() == "18FF50E5" for tok in line.split()):
+                    m_ts = RE_TS_ONLY.match(line)
+                    if m_ts:
+                        ts = parse_ts(m_ts.group(1))
+                        if ts:
+                            ff18_list.append(ts)
 
             m = RE_012C.match(line)
             if m:
@@ -176,48 +254,6 @@ def parse_trc(fp, progress_cb=None, total_lines=None):
 
     return soc_list, latch_list, current_list, temp_list, ff18_list, vmin_list, vmax_list, log_gaps
 
-
-def _gap_overlap_seconds(start_ts, end_ts, log_gaps):
-    """Total duration within [start_ts, end_ts] that falls inside recording gaps."""
-
-    if not log_gaps:
-        return 0.0
-
-    total = 0.0
-    for g_start, g_end in log_gaps:
-        if g_end <= start_ts or g_start >= end_ts:
-            continue
-        s = max(start_ts, g_start)
-        e = min(end_ts, g_end)
-        if e > s:
-            total += (e - s).total_seconds()
-    return total
-
-
-def detect_charge_sessions(ff18_list, log_gaps, timeout_sec=3.0):
-    """Charging is inactive if 18FF50E5 is not seen for at least 3s"""
-    if not ff18_list:
-        return []
-
-    ff18_list = sorted(ff18_list)
-    sessions = []
-    start = ff18_list[0]
-    last = start
-
-    for ts in ff18_list[1:]:
-        raw_gap = (ts - last).total_seconds()
-        if raw_gap > timeout_sec:
-            # Subtract any portions of this gap that are actually due to
-            # missing recording (large file time jumps). Those periods
-            # should not be treated as "18FF50E5 missing".
-            effective_gap = raw_gap - _gap_overlap_seconds(last, ts, log_gaps)
-            if effective_gap > timeout_sec:
-                sessions.append((start, last))
-                start = ts
-        last = ts
-
-    sessions.append((start, last))
-    return sessions
 
 def lookup_before(ts, data):
     best = None
@@ -244,10 +280,26 @@ def integrate_window(current_list, start_ts, end_ts):
             continue
         if t0 >= end_ts:
             break
-        dt = (t1 - t0).total_seconds()
-        if dt <= 0 or dt > 0.5:
-            dt = DEFAULT_DT
-        As += I * dt
+
+        seg_start = max(t0, start_ts)
+        seg_end = min(t1, end_ts)
+        if seg_end <= seg_start:
+            continue
+
+        pair_dt = (t1 - t0).total_seconds()
+        overlap_dt = (seg_end - seg_start).total_seconds()
+        if overlap_dt <= 0:
+            continue
+
+        if pair_dt <= 0:
+            dt = 0.0
+        elif pair_dt > 0.5:
+            dt = min(DEFAULT_DT, overlap_dt)
+        else:
+            dt = overlap_dt
+
+        if dt > 0:
+            As += I * dt
 
     return As / 3600.0
 
@@ -302,13 +354,12 @@ def find_last_soc_before_100(soc_list, start_ts, first_100_ts):
     return last
 
 
-def _v_window_around_latch(latch_ts, vmin_list, vmax_list, pre=3, post=3):
-    """Return (Vmin, Vmax) in a 7-sample window around latch.
+def _v_window_around_latch(latch_ts, vmin_list, vmax_list, pre=5, post=5):
+    """Return (Vmin, Vmax) in an 11-sample window around latch.
 
-    The window is centered on the 0x012C sample closest in time to the
-    latch timestamp: 3 samples before and 3 after (total up to 7). The
-    final Vmax is the maximum within this window, and Vmin is taken from
-    the same sample as that Vmax.
+    Window definition (per requirement): take 5 0x012C samples before the
+    latch-adjacent sample and 5 after (total up to 11). Pick the maximum
+    Vmax within that window; Vmin is taken from the same sample.
     """
 
     if not latch_ts or not vmin_list or not vmax_list:
@@ -320,11 +371,16 @@ def _v_window_around_latch(latch_ts, vmin_list, vmax_list, pre=3, post=3):
 
     pairs = list(zip(vmin_list[:n], vmax_list[:n]))
 
-    # Find index of 0x012C sample closest in time to latch
-    def _time_diff_sec(i):
-        return abs((pairs[i][0][0] - latch_ts).total_seconds())
+    latch_idx = None
+    for i in range(n):
+        if pairs[i][0][0] >= latch_ts:
+            latch_idx = i
+            break
+    if latch_idx is None:
+        def _time_diff_sec(i):
+            return abs((pairs[i][0][0] - latch_ts).total_seconds())
 
-    latch_idx = min(range(n), key=_time_diff_sec)
+        latch_idx = min(range(n), key=_time_diff_sec)
 
     start = max(0, latch_idx - pre)
     end = min(n - 1, latch_idx + post)
@@ -347,9 +403,9 @@ def _v_window_around_latch(latch_ts, vmin_list, vmax_list, pre=3, post=3):
 def classify_latch(latch_ts, vmin_list, vmax_list):
     """Classify latch as Primary/Secondary using Vmin around latch.
 
-    Uses the same 7-sample window logic as _v_window_around_latch and
-    bases the classification on the Vmin corresponding to the chosen
-    Vmax sample.
+    Uses the 11-sample window logic from _v_window_around_latch (5 before,
+    latch-adjacent, 5 after) and bases the classification on the Vmin
+    corresponding to the chosen Vmax sample.
     """
 
     if not latch_ts:
@@ -364,6 +420,41 @@ def classify_latch(latch_ts, vmin_list, vmax_list):
         return "Primary", vmin_val, vmax_val
 
     return "Secondary", vmin_val, vmax_val
+
+
+def last_active_v_pair(vmin_list, vmax_list, intervals, session_start_ts, session_end_ts):
+    if not vmin_list or not vmax_list or not intervals:
+        return None, None
+
+    n = min(len(vmin_list), len(vmax_list))
+    if n <= 0:
+        return None, None
+
+    last = None
+    for (tmin, vmin), (tmax, vmax) in zip(vmin_list[:n], vmax_list[:n]):
+        if tmin != tmax:
+            continue
+        ts = tmin
+        if not (session_start_ts <= ts <= session_end_ts):
+            continue
+
+        active = False
+        for state, s, e in intervals:
+            if state != "ACTIVE":
+                continue
+            if s <= ts <= e:
+                active = True
+                break
+        if not active:
+            continue
+
+        if last is None or ts > last[0]:
+            last = (ts, vmin, vmax)
+
+    if last is None:
+        return None, None
+
+    return int(last[1]), int(last[2])
 
 
 def decide_pass_fail(latch_ts, vmax_list, start_ts, end_ts, vmax_threshold=3535):
@@ -390,11 +481,9 @@ def decide_pass_fail(latch_ts, vmax_list, start_ts, end_ts, vmax_threshold=3535)
         if v > vmax_threshold and first_over_ts is None:
             first_over_ts = ts
 
-    # If we never crossed the threshold, it's a PASS regardless of latch
     if first_over_ts is None:
         return "PASS"
 
-    # We crossed the threshold; require a latch at or after that time
     if latch_ts and latch_ts >= first_over_ts:
         return "PASS"
 
@@ -402,8 +491,21 @@ def decide_pass_fail(latch_ts, vmax_list, start_ts, end_ts, vmax_threshold=3535)
 
 
 def format_duration(td):
-    s = int(td.total_seconds())
-    return f"{s//3600}hr,{(s%3600)//60}min,{s%60}s"
+    total = td.total_seconds()
+    if total < 0:
+        total = 0.0
+
+    h = int(total // 3600)
+    rem = total - (h * 3600)
+    m = int(rem // 60)
+    sec = rem - (m * 60)
+
+    if total < 60:
+        s_str = f"{sec:.1f}".rstrip("0").rstrip(".") + "s"
+    else:
+        s_str = f"{int(sec)}s"
+
+    return f"{h}hr,{m}min,{s_str}"
 
 
 def parse_duration_str(s):
@@ -412,7 +514,7 @@ def parse_duration_str(s):
         h_part, m_part, s_part = s.split(",")
         h = int(h_part.replace("hr", ""))
         m = int(m_part.replace("min", ""))
-        sec = int(s_part.replace("s", ""))
+        sec = float(s_part.replace("s", ""))
         return timedelta(hours=h, minutes=m, seconds=sec)
     except Exception:
         return timedelta(0)
@@ -427,7 +529,6 @@ def merge_tail_active_windows(rows, threshold_soc=90.0):
     if not rows:
         return rows
 
-    # Find suffix of rows that are ACTIVE and start above threshold_soc
     idx = len(rows) - 1
     suffix_indices = []
 
@@ -441,12 +542,10 @@ def merge_tail_active_windows(rows, threshold_soc=90.0):
     if len(suffix_indices) <= 1:
         return rows
 
-    # Determine range to merge
     start_idx = suffix_indices[-1]
     end_idx = suffix_indices[0]
     segment = rows[start_idx:end_idx + 1]
 
-    # Aggregate
     merged_status = "ACTIVE"
     merged_soc_start = segment[0][1]
     merged_soc_end = segment[-1][2]
@@ -473,51 +572,44 @@ def merge_tail_active_windows(rows, threshold_soc=90.0):
 
     return rows[:start_idx] + [merged_row] + rows[end_idx + 1:]
 
-def build_charge_windows(soc_list, current_list, temp_list, start_ts, end_ts, charge_sessions):
+def build_charge_windows(
+    soc_list,
+    current_list,
+    temp_list,
+    start_ts,
+    end_ts,
+    charge_sessions,
+    inactive_gap=INACTIVE_GAP_SEC,
+):
     rows = []
     soc_list = sorted(soc_list, key=lambda x: x[0])
 
     cur = lookup_before(start_ts, soc_list)
     if not cur:
         return rows, None
+    ws_soc = cur[1]
+    ws_ts = start_ts
 
-    ws_ts, ws_soc = cur
-
-    def is_in_charge_session(ts):
-        for cs_start, cs_end in charge_sessions:
-            if cs_start <= ts <= cs_end:
+    def is_active(ts):
+        for s, e in charge_sessions:
+            if s <= ts < e:
                 return True
         return False
 
-    def find_next_charge_session(after_ts):
-        """Find the next charge session starting after given timestamp"""
-        for cs_start, cs_end in charge_sessions:
-            if cs_start > after_ts:
-                return cs_start, cs_end
-        return None, None
-
-    # Per requirement: charging session becomes ACTIVE only when
-    # 18FF50E5 is first seen. Do not treat any time before that as
-    # an "inactive charge" period.
-    if charge_sessions:
-        first_cs_start = charge_sessions[0][0]
-        if ws_ts < first_cs_start:
-            soc_at_first = lookup_before(first_cs_start, soc_list)
-            if soc_at_first:
-                ws_soc = soc_at_first[1]
-            ws_ts = first_cs_start
+    def active_end(ts):
+        for s, e in charge_sessions:
+            if s <= ts < e:
+                return e
+        return None
 
     while ws_ts < end_ts:
-        # Check if we're currently in a charge session
-        in_session = is_in_charge_session(ws_ts)
-        
-        if in_session:
-            # Active charging - build 10% window
+        if is_active(ws_ts):
+            ae = active_end(ws_ts)
+            ae = min(ae, end_ts) if ae else end_ts
+
             target_soc = ws_soc + 10.0
             next_ts = None
             next_soc = None
-            left_session_ts = None
-            left_session_soc = None
 
             for item in soc_list:
                 if len(item) == 3:
@@ -525,76 +617,74 @@ def build_charge_windows(soc_list, current_list, temp_list, start_ts, end_ts, ch
                 ts, soc = item
                 if ts <= ws_ts:
                     continue
-                if ts > end_ts:
+                if ts >= ae:
                     break
-
-                # Only advance window if we're in a charge session AND SoC is increasing
-                if is_in_charge_session(ts) and soc >= ws_soc:
-                    if soc >= target_soc:
-                        next_ts = ts
-                        next_soc = target_soc
-                        break
+                if soc >= ws_soc:
                     next_ts = ts
-                    next_soc = soc
-                # If we left the charge session, remember where and stop
-                elif not is_in_charge_session(ts):
-                    left_session_ts = ts
-                    left_session_soc = soc
-                    break
+                    next_soc = min(soc, target_soc)
+                    if soc >= target_soc:
+                        break
 
-            if next_ts and next_soc > ws_soc:
-                # We managed to form an active window within this session
+            if next_ts and next_ts > ws_ts:
                 ah = integrate_window(current_list, ws_ts, next_ts)
                 tavg = window_temp_avg(temp_list, ws_ts, next_ts)
-
-                if (next_ts - ws_ts).total_seconds() >= 3 and ah > 0:
-                    rows.append(("ACTIVE", ws_soc, next_soc, format_duration(next_ts - ws_ts), ah, tavg))
-
+                rows.append(
+                    (
+                        "ACTIVE",
+                        ws_soc,
+                        next_soc,
+                        format_duration(next_ts - ws_ts),
+                        ah,
+                        tavg,
+                    )
+                )
                 ws_ts = next_ts
                 ws_soc = next_soc
-            elif left_session_ts is not None:
-                # Session ended before next 10% window; switch to INACTIVE starting
-                # from the first timestamp outside the session
-                ws_ts = left_session_ts
-                ws_soc = left_session_soc if left_session_soc is not None else ws_soc
-                continue
             else:
-                # No more usable data
-                break
+                soc_at_ae = lookup_before(ae, soc_list)
+                if soc_at_ae:
+                    ws_soc = soc_at_ae[1]
+                ws_ts = ae
+
         else:
-            # Inactive period - find next session
-            next_session_start, next_session_end = find_next_charge_session(ws_ts)
-            
-            inactive_period_end = None
+            next_active_start = None
+            for s, e in charge_sessions:
+                if s > ws_ts:
+                    next_active_start = s
+                    break
 
-            if not next_session_start or next_session_start >= end_ts:
-                # No further charge session; inactive until end_ts
-                inactive_period_end = end_ts
-            else:
-                inactive_period_end = next_session_start
+            ie = next_active_start if next_active_start else end_ts
+            if ie <= ws_ts:
+                break
 
-            # Get SoC at end of inactive period
-            inactive_end_soc = ws_soc
+            display_start = ws_ts
+            if inactive_gap and inactive_gap > 0:
+                display_start = max(start_ts, ws_ts - timedelta(seconds=inactive_gap))
+
+            end_soc = ws_soc
             for item in soc_list:
                 if len(item) == 3:
                     continue
                 ts, soc = item
-                if ws_ts < ts <= inactive_period_end:
-                    inactive_end_soc = soc
+                if display_start < ts <= ie:
+                    end_soc = soc
 
-            # Add inactive row with true capacity exchange over this period
-            inactive_duration = inactive_period_end - ws_ts
-            if inactive_duration.total_seconds() >= 3:
-                inactive_ah = integrate_window(current_list, ws_ts, inactive_period_end)
-                tavg_inactive = window_temp_avg(temp_list, ws_ts, inactive_period_end)
-                rows.append(("INACTIVE", ws_soc, inactive_end_soc,
-                             format_duration(inactive_duration), inactive_ah, tavg_inactive))
+            ah = integrate_window(current_list, display_start, ie)
+            tavg = window_temp_avg(temp_list, display_start, ie)
 
-            if not next_session_start or next_session_start >= end_ts:
-                break
+            rows.append(
+                (
+                    "INACTIVE",
+                    ws_soc,
+                    end_soc,
+                    format_duration(ie - display_start),
+                    ah,
+                    tavg,
+                )
+            )
 
-            ws_ts = next_session_start
-            ws_soc = inactive_end_soc
+            ws_ts = ie
+            ws_soc = end_soc
 
     return rows, ws_ts
 
@@ -641,7 +731,8 @@ def draw_charging_table(
     for row_data in rows:
         if row_data[0] == "INACTIVE":
             _, sv, ev, dur, ah, tavg = row_data
-            # Show true capacity exchange and average temperature for inactive periods
+            if ah is not None and abs(ah) < 0.005:
+                ah = 0.0
             draw_row(
                 [
                     f"INACTIVE: {sv:.2f}% → {ev:.2f}%",
@@ -651,11 +742,12 @@ def draw_charging_table(
                 ],
                 bg="#ffcccc",
             )
-        else:  # ACTIVE
+        else:
             _, sv, ev, dur, ah, tavg = row_data
+            if ah is not None and abs(ah) < 0.005:
+                ah = 0.0
             draw_row([f"{sv:.2f}% → {ev:.2f}%", dur, f"{ah:.2f} Ah", f"{tavg:.1f} C" if tavg else ""])
 
-    # Initial  Final SoC row (duration, total Ah, avg temp)
     draw_row(initial_to_final_row, bg="#e6f2ff")
 
     if latch_row:
@@ -664,10 +756,10 @@ def draw_charging_table(
     draw_row(["TOTAL", total_time, f"{total_ah:.2f} Ah", ""], bg="#a0d0ff")
 
     vmax_text = "N/A" if vmax_peak is None else f"{vmax_peak} mV"
+    vmin_text = "N/A" if vmin_at_latch is None else f"{vmin_at_latch} mV"
     if latch_type == "NA":
-        footer = f"LATCH : NA | Vmax {vmax_text} | RESULT : {result}"
+        footer = f"LATCH : NA | Vmin {vmin_text} | Vmax {vmax_text} | RESULT : {result}"
     else:
-        vmin_text = "N/A" if vmin_at_latch is None else f"{vmin_at_latch} mV"
         footer = f"LATCH : {latch_type.upper()} | Vmin {vmin_text} | Vmax {vmax_text} | RESULT : {result}"
 
     ax.text(
@@ -693,7 +785,6 @@ def main():
     trc = get_trc_file()
     out = Path(__file__).resolve().parent
 
-    # Delete old output files
     for fname in ["Primary_vs_Secondary_Latch_results.json", 
                   "Primary_vs_Secondary_Latch_summary.json", 
                   "Primary_vs_Secondary_Latch_plot.png"]:
@@ -717,11 +808,21 @@ def main():
         log_gaps,
     ) = parse_trc(trc, parse_cb, total_lines)
 
-    # Detect charge sessions - inactive if 18FF50E5 not seen for 3s,
-    # excluding long recording gaps from that inactivity logic.
-    charge_sessions = detect_charge_sessions(ff18_list, log_gaps)
+    trc_end_ts = None
+    for seq in (soc_list, latch_list, current_list, temp_list, vmin_list, vmax_list):
+        if not seq:
+            continue
+        ts = max((x[0] for x in seq if x and x[0] is not None), default=None)
+        if ts and (trc_end_ts is None or ts > trc_end_ts):
+            trc_end_ts = ts
+    if ff18_list:
+        ts = max(ff18_list)
+        if ts and (trc_end_ts is None or ts > trc_end_ts):
+            trc_end_ts = ts
 
-    if not charge_sessions:
+    session_bounds = get_charge_session_bounds(ff18_list, latch_list, trc_end_ts)
+
+    if not session_bounds:
         result_value = "PASS"
 
         results = {"Result": result_value}
@@ -763,6 +864,59 @@ def main():
 
         print("PROGRESS 100.0", flush=True)
         return
+
+    session_start_ts, session_end_ts = session_bounds
+
+    intervals = build_charge_intervals(
+        ff18_list,
+        session_start_ts,
+        session_end_ts,
+        inactive_gap=INACTIVE_GAP_SEC,
+    )
+    charge_sessions = _intervals_to_active_sessions(intervals)
+
+    def _env_true(name: str) -> bool:
+        v = os.environ.get(name)
+        if v is None:
+            return False
+        return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
+    if _env_true("DEBUG_FF18"):
+        session_ff18 = sorted(ts for ts in ff18_list if session_start_ts <= ts <= session_end_ts)
+        print(f"DEBUG_FF18 session_start={session_start_ts} session_end={session_end_ts}")
+        print(f"DEBUG_FF18 ff18_count_in_session={len(session_ff18)}")
+
+        def _prev_ff18(t):
+            prev = None
+            for x in session_ff18:
+                if x <= t:
+                    prev = x
+                else:
+                    break
+            return prev
+
+        def _next_ff18(t):
+            for x in session_ff18:
+                if x >= t:
+                    return x
+            return None
+
+        for state, s, e in intervals:
+            if state != "INACTIVE":
+                continue
+            dur = (e - s).total_seconds()
+            if dur <= 0:
+                continue
+            prev = _prev_ff18(s)
+            nxt = _next_ff18(e)
+            raw_gap = None
+            if prev and nxt:
+                raw_gap = (nxt - prev).total_seconds()
+            print(
+                "DEBUG_FF18 INACTIVE "
+                f"[{s} -> {e}] dur={dur:.3f}s "
+                f"prev_ff18={prev} next_ff18={nxt} raw_ff18_gap={raw_gap}"
+            )
 
     rows, total_ah, total_time = [], 0.0, timedelta()
     latch_row = None
@@ -821,23 +975,36 @@ def main():
             break
         final_soc_ts = ts
 
-    # Build 10% SoC windows
     end_ts = first_100_ts if first_100_ts else real_soc[-1][0]
-    rows, _ = build_charge_windows(soc_list, current_list, temp_list, first_soc_ts, end_ts, charge_sessions)
+    if session_end_ts and end_ts and end_ts > session_end_ts:
+        end_ts = session_end_ts
 
-    # Merge final ACTIVE windows above 90% SoC into a single window
+    rows, _ = build_charge_windows(
+        soc_list,
+        current_list,
+        temp_list,
+        session_start_ts,
+        end_ts,
+        charge_sessions,
+        inactive_gap=INACTIVE_GAP_SEC,
+    )
+
+    if _env_true("DEBUG_FF18"):
+        inactive_rows = [r for r in rows if r and r[0] == "INACTIVE"]
+        print(f"DEBUG_FF18 inactive_rows_in_table={len(inactive_rows)}")
+        for r in inactive_rows[:10]:
+            status, sv, ev, dur, ah, tavg = r
+            print(f"DEBUG_FF18 TABLE {status} {sv:.2f}%->{ev:.2f}% dur={dur} ah={ah:.4f}")
+
     rows = merge_tail_active_windows(rows, threshold_soc=90.0)
 
-    # Duration considering only ACTIVE charging windows (exclude INACTIVE)
     active_duration_td = sum(
         (parse_duration_str(row[3]) for row in rows if row[0] == "ACTIVE"),
         timedelta(0),
     )
 
-    # Capacity exchange between Initial→Final SoC (ACTIVE windows only)
     initial_to_final_ah = sum(row[4] for row in rows if row[0] == "ACTIVE")
 
-    # Average temperature over ACTIVE windows, weighted by duration
     temp_weighted_sum = 0.0
     temp_total_seconds = 0.0
     for row in rows:
@@ -857,10 +1024,9 @@ def main():
         temp_weighted_sum / temp_total_seconds if temp_total_seconds > 0 else None
     )
 
-    # Total Ah = sum of capacity exchange from both ACTIVE and INACTIVE windows
     total_ah = sum(row[4] for row in rows)
 
-    latch_ts = next((ts for ts, v in latch_list if v == 1), None)
+    latch_ts = next((ts for ts, v in latch_list if v == 1 and ts >= session_start_ts), None)
 
     if latch_ts and first_100_ts and latch_ts > first_100_ts:
         ah = integrate_window(current_list, first_100_ts, latch_ts)
@@ -871,10 +1037,8 @@ def main():
     else:
         latch_duration_td = timedelta(0)
 
-    # Initial→Final SoC duration excludes INACTIVE sessions
     initial_to_final = format_duration(active_duration_td)
 
-    # Build Initial→Final SoC row for the table
     init_ah_str = f"{initial_to_final_ah:.2f} Ah" if initial_to_final_ah is not None else ""
     init_tavg_str = (
         f"{initial_to_final_tavg:.1f} C" if initial_to_final_tavg is not None else ""
@@ -887,20 +1051,21 @@ def main():
         init_tavg_str,
     ]
 
-    # TOTAL duration = active charging duration + 100%→True Latch duration (if any)
     total_time_td = active_duration_td + latch_duration_td
     total_time = format_duration(total_time_td)
 
-    # Classify latch type and compute Vmin/Vmax in a 7-sample window
-    # (3 samples before and 3 after) around the latch.
     latch_type, vmin_at_latch, vmax_at_latch = classify_latch(
         latch_ts, vmin_list, vmax_list
     )
+    if latch_type == "NA":
+        vmin_f, vmax_f = last_active_v_pair(vmin_list, vmax_list, intervals, session_start_ts, session_end_ts)
+        if vmax_at_latch is None:
+            vmax_at_latch = vmax_f
+        if vmin_at_latch is None:
+            vmin_at_latch = vmin_f
 
-    # PASS/FAIL decision still uses peak Vmax over the window
-    result = decide_pass_fail(latch_ts, vmax_list, first_soc_ts, final_soc_ts)
+    result = decide_pass_fail(latch_ts, vmax_list, session_start_ts, session_end_ts)
 
-    # Minimal results JSON: only PASS/FAIL
     results = {"Result": result}
 
     summary = {
@@ -914,7 +1079,6 @@ def main():
         "result": result
     }
 
-    # Write JSON files
     with open(out / "Primary_vs_Secondary_Latch_results.json", "w") as f:
         json.dump(results, f, indent=2)
 
@@ -960,7 +1124,6 @@ if __name__ == "__main__":
             with open(out / "Primary_vs_Secondary_Latch_summary.json", "w") as f:
                 json.dump(fallback_summary, f, indent=2)
 
-            # Also emit a minimal placeholder plot so the tracker finds a graph.
             try:
                 draw_charging_table(
                     rows=[],
