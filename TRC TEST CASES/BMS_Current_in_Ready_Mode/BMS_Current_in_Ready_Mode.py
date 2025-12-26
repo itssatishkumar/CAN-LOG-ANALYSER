@@ -7,7 +7,6 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 from trc_utils import fast_parse_ts, progress_by_bytes
-
 PROGRESS_STEP = 0.5  # percent granularity for live progress
 
 # ---------------------------------------------------------------------
@@ -38,7 +37,7 @@ PLOT_FILE    = "BMS_Current_in_Ready_Mode_plot.png"
 # ---------------------------------------------------------------------
 BMS_STATE_ID     = 0x0109
 PACK_CURRENT_ID  = 0x0110
-BMS_READY_VALUE  = 0x01
+BMS_ALLOWED_VALUES = {0x01, 0x04}  # only evaluate current when state is one of these
 SCALE_FACTOR     = 1e-5
 THRESHOLD_A      = 0.2   # PASS if |max_current| <= 0.2A
 
@@ -60,6 +59,7 @@ pattern = re.compile(
 # ---------------------------------------------------------------------
 ready_records = []
 current_bms_state = None
+pending_records = []  # 0110 samples awaiting confirmation from the next 0109 state
 
 # ---------------------------------------------------------------------
 # PARSE TRC FILE
@@ -88,16 +88,27 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         dt, _, timestamp = fast_parse_ts(date_str, time_str, ms_str)
 
         # ---------------------------------------------------------
-        # 0109 → BMS READY STATE
+        # 0109 → BMS STATE
         # ---------------------------------------------------------
         if can_id == BMS_STATE_ID:
             if len(data) >= 5:
-                current_bms_state = data[4]    # BYTE-5 EXACT
+                next_bms_state = data[4]    # BYTE-5 EXACT
+
+                # Confirm/discard pending 0110 samples using this *next* state.
+                if pending_records:
+                    if next_bms_state in BMS_ALLOWED_VALUES:
+                        ready_records.extend(pending_records)
+                    pending_records.clear()
+
+                current_bms_state = next_bms_state
 
         # ---------------------------------------------------------
-        # 0110 → PACK CURRENT IF READY
+        # 0110 → PACK CURRENT
+        # Keep sample only if:
+        #  - previous 0109 state is allowed (0x01/0x04), and
+        #  - the next 0109 state (seen later in the log) is also allowed.
         # ---------------------------------------------------------
-        if can_id == PACK_CURRENT_ID and current_bms_state == BMS_READY_VALUE:
+        if can_id == PACK_CURRENT_ID and current_bms_state in BMS_ALLOWED_VALUES:
 
             if len(data) < 8:
                 continue
@@ -114,12 +125,16 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
 
             current_A = raw * SCALE_FACTOR
 
-            ready_records.append({
+            pending_records.append({
                 "timestamp": timestamp,
                 "raw_bytes": " ".join(f"{b:02X}" for b in data[4:8]),
                 "signed_value": raw,
                 "current_A": round(current_A, 5)
             })
+
+# If the file ends before another 0109 arrives, we cannot confirm the "after" state.
+# Discard any remaining pending 0110 samples.
+pending_records.clear()
 
 # ---------------------------------------------------------------------
 # FIND ONLY MAX CURRENT FOR SUMMARY
