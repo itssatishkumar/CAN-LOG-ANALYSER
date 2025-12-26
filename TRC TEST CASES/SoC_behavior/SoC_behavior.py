@@ -148,7 +148,7 @@ df = pd.DataFrame({
 })
 
 
-def detect_soc_stuck_odo(df, odo_events, min_km=3.0, max_soc_delta=1.0):
+def detect_soc_stuck_odo(df, odo_events, min_km=3.0, max_soc_delta=1.0, max_odo_gap_ms=3000):
     if len(odo_events) < 2:
         return False, None, None
 
@@ -168,6 +168,14 @@ def detect_soc_stuck_odo(df, odo_events, min_km=3.0, max_soc_delta=1.0):
             break
 
         t_end, odo_end = odo_sorted[j]
+
+        has_large_gap = False
+        for k in range(i, j):
+            if (odo_sorted[k + 1][0] - odo_sorted[k][0]) > max_odo_gap_ms:
+                has_large_gap = True
+                break
+        if has_large_gap:
+            continue
 
         seg = df[(df["ts"] >= t_start) & (df["ts"] <= t_end)]
         if seg.empty:
