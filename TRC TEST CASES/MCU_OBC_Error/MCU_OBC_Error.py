@@ -1,3 +1,5 @@
+
+
 import os
 import sys
 import json
@@ -138,6 +140,19 @@ soc_events = []
 cap_events = []
 
 # -----------------------------------------------------
+# Helper for BMS state before/after (must be above all uses)
+def get_bms_state_before_after(events, t_ms):
+    before = None
+    after = None
+    for i, ev in enumerate(events):
+        if ev[0] < t_ms:
+            before = ev
+        elif ev[0] > t_ms:
+            after = ev
+            break
+    return before, after
+
+# -----------------------------------------------------
 # Parse the TRC
 # -----------------------------------------------------
 with open(trc_path, "r", encoding="utf-8", errors="ignore") as trc:
@@ -238,51 +253,172 @@ uv_any = len(uv_instances) > 0
 uv_all_soc_below_2 = True if uv_any else False
 uv_remark = ""
 
-def get_bms_state_before_after(events, t_ms):
-    before = None
-    after = None
-    for i, ev in enumerate(events):
-        if ev[0] < t_ms:
-            before = ev
-        elif ev[0] > t_ms:
-            after = ev
+
+# -----------------------------------------------------
+# MCU LowTemp remark table generation (like UnderVolt)
+# -----------------------------------------------------
+lt_state = error_states.get("MCU_LowTemp", {"instances": []})
+lt_instances = lt_state["instances"]
+TEMP_CAN_ID = 0x0705
+temp_events = []
+with open(trc_path, "r", encoding="utf-8", errors="ignore") as trc:
+    for line_idx, line in enumerate(trc, 1):
+        m = pattern.match(line)
+        if not m:
+            continue
+        can_id = int(m.group(4), 16)
+        dlc = int(m.group(5))
+        data_bytes = m.group(6).strip().split()
+        if can_id == TEMP_CAN_ID and dlc >= 1 and len(data_bytes) >= 1:
+            data = [int(b, 16) for b in data_bytes[:dlc]]
+            temp_raw = data[0]
+            temp = temp_raw - 256 if temp_raw > 127 else temp_raw
+            date_str, time_str, ms_str = m.group(1), m.group(2), m.group(3)
+            _, ts_ms, _ = fast_parse_ts(date_str, time_str, ms_str)
+            temp_events.append((ts_ms, temp))
+
+if len(lt_instances) > 0 and len(temp_events) > 0:
+    def get_temp_window(ts_ms, temp_events, window=5):
+        idx = None
+        for i, (t, _) in enumerate(temp_events):
+            if t >= ts_ms:
+                idx = i
+                break
+        if idx is None:
+            idx = len(temp_events)
+        start = max(0, idx - window)
+        end = min(len(temp_events), idx + window + 1)
+        window_vals = [v for _, v in temp_events[start:end]]
+        return min(window_vals) if window_vals else ""
+
+    table_header = ["No.", "SoC", "BMSS", "Vmcu", "Vbat", "Temp(-38°C)"]
+    table_rows = []
+    for idx, inst in enumerate(lt_instances, 1):
+        t_ms = inst.get("Start_ms")
+        if t_ms is None:
+            soc_pct = bms_state = cap_volt = vbat = temp_val = None
+            bms_transition = "N/A"
+        else:
+            before_ev, after_ev = get_bms_state_before_after(soc_events, t_ms)
+            cap_ev = find_last_event(cap_events, t_ms)
+            soc_ev = find_last_event(soc_events, t_ms)
+            _, soc_pct, bms_state, *rest = soc_ev if soc_ev else (None, None, None, None)
+            vbat = rest[0] if rest else None
+            before_bms = int(before_ev[2]) if before_ev else None
+            after_bms = int(after_ev[2]) if after_ev else None
+            bms_transition = f"{before_bms}->{after_bms}" if before_bms is not None and after_bms is not None else "N/A"
+            cap_volt = cap_ev[1] if cap_ev is not None else None
+            temp_val = get_temp_window(t_ms, temp_events)
+
+        table_rows.append([
+            str(idx),
+            f"{soc_pct:.2f}" if soc_pct is not None else "",
+            bms_transition,
+            f"{cap_volt}" if cap_volt is not None else "",
+            f"{vbat:.1f}" if vbat is not None else "",
+            f"{temp_val}" if temp_val != "" else ""
+        ])
+
+    col_widths = [max(len(str(row[i])) for row in ([table_header] + table_rows)) for i in range(len(table_header))]
+    col_widths[0] = max(2, col_widths[0] // 2)
+    def fmt_row(row):
+        return " | ".join(str(cell).ljust(col_widths[i]) for i, cell in enumerate(row))
+    sep_line = "-+-".join("-" * w for w in col_widths)
+    table_str = fmt_row(table_header) + "\n" + sep_line + "\n" + "\n".join(fmt_row(row) for row in table_rows)
+    lt_remark = table_str
+
+    for e in signals_result:
+        if e["Name"] == "MCU_LowTemp":
+            e["Remark"] = lt_remark
             break
-    return before, after
 
-for inst in uv_instances:
-    t_ms = inst.get("Start_ms")
-    if t_ms is None:
-        uv_all_soc_below_2 = False
-        continue
 
-    before_ev, after_ev = get_bms_state_before_after(soc_events, t_ms)
-    cap_ev = find_last_event(cap_events, t_ms)
 
-    # Use closest event for SoC/vbat for remark, but use before/after for BMS state check
-    soc_ev = find_last_event(soc_events, t_ms)
-    _, soc_pct, bms_state, *rest = soc_ev if soc_ev else (None, None, None, None)
-    vbat = rest[0] if rest else None
+# Helper for BMS state before/after (must be above first use)
 
-    before_bms = int(before_ev[2]) if before_ev else None
-    after_bms = int(after_ev[2]) if after_ev else None
-    # Show BMS state transition in remark (ASCII arrow for compatibility)
-    bms_transition = f"BMS State: {before_bms} -> {after_bms}" if before_bms is not None and after_bms is not None else "BMS State: N/A"
-    # Only FAIL if both before and after BMS state are 3
-    if before_bms == 3 and after_bms == 3:
-        uv_all_soc_below_2 = False
 
-    if soc_pct is not None and soc_pct >= 2.0:
-        uv_all_soc_below_2 = False
 
-    if not uv_remark:
-        cap_volt = cap_ev[1] if cap_ev is not None else None
-        first_line = f"SoC={soc_pct:.2f}% ({bms_transition})"
-        lines = [first_line]
-        if cap_volt is not None:
-            lines.append(f"MCU_CAP_Volt={cap_volt} V")
-        if vbat is not None:
-            lines.append(f"Vbat={vbat:.1f} V")
-        uv_remark = "\n".join(lines)
+
+# Build table for all MCU_UnderVolt instances, now with Vmin
+if uv_any:
+    VMIN_CAN_ID = 0x012C
+    vmin_events = []
+    # Parse Vmin from TRC file (already parsed above, so let's do it here for all lines)
+    with open(trc_path, "r", encoding="utf-8", errors="ignore") as trc:
+        for line_idx, line in enumerate(trc, 1):
+            m = pattern.match(line)
+            if not m:
+                continue
+            can_id = int(m.group(4), 16)
+            dlc = int(m.group(5))
+            data_bytes = m.group(6).strip().split()
+            if can_id == VMIN_CAN_ID and dlc >= 4 and len(data_bytes) >= 4:
+                data = [int(b, 16) for b in data_bytes[:dlc]]
+                # Voltage_Min : 16|16@1+ (0.1,0) [0|0] "mV" => bytes 2,3 (index 2,3), little endian
+                vmin_raw = data[2] | (data[3] << 8)
+                vmin = vmin_raw * 0.1  # mV to V
+                # Timestamp
+                date_str, time_str, ms_str = m.group(1), m.group(2), m.group(3)
+                _, ts_ms, _ = fast_parse_ts(date_str, time_str, ms_str)
+                vmin_events.append((ts_ms, vmin))
+
+    def get_vmin_window(ts_ms, vmin_events, window=5):
+        # Find index of closest event
+        idx = None
+        for i, (t, _) in enumerate(vmin_events):
+            if t >= ts_ms:
+                idx = i
+                break
+        if idx is None:
+            idx = len(vmin_events)
+        # Get 5 before, 1 at, 5 after
+        start = max(0, idx - 5)
+        end = min(len(vmin_events), idx + 6)
+        window_vals = [v for _, v in vmin_events[start:end]]
+        return min(window_vals) if window_vals else ""
+
+    table_header = ["No.", "SoC", "BMSS", "Vmcu", "Vbat", "Vmin"]
+    table_rows = []
+    for idx, inst in enumerate(uv_instances, 1):
+        t_ms = inst.get("Start_ms")
+        if t_ms is None:
+            soc_pct = bms_state = cap_volt = vbat = vmin_val = None
+            bms_transition = "N/A"
+        else:
+            before_ev, after_ev = get_bms_state_before_after(soc_events, t_ms)
+            cap_ev = find_last_event(cap_events, t_ms)
+            soc_ev = find_last_event(soc_events, t_ms)
+            _, soc_pct, bms_state, *rest = soc_ev if soc_ev else (None, None, None, None)
+            vbat = rest[0] if rest else None
+            before_bms = int(before_ev[2]) if before_ev else None
+            after_bms = int(after_ev[2]) if after_ev else None
+            bms_transition = f"{before_bms}->{after_bms}" if before_bms is not None and after_bms is not None else "N/A"
+
+            # Only FAIL if both before and after BMS state are 3
+            if before_bms == 3 and after_bms == 3:
+                uv_all_soc_below_2 = False
+            if soc_pct is not None and soc_pct >= 2.0:
+                uv_all_soc_below_2 = False
+            cap_volt = cap_ev[1] if cap_ev is not None else None
+            vmin_val = get_vmin_window(t_ms, vmin_events)
+
+        table_rows.append([
+            str(idx),
+            f"{soc_pct:.2f}" if soc_pct is not None else "",
+            bms_transition,
+            f"{cap_volt}" if cap_volt is not None else "",
+            f"{vbat:.1f}" if vbat is not None else "",
+            f"{vmin_val:.2f}" if isinstance(vmin_val, float) else ""
+        ])
+
+    # Format as a markdown-like table for the remark
+    col_widths = [max(len(str(row[i])) for row in ([table_header] + table_rows)) for i in range(len(table_header))]
+    col_widths[0] = max(2, col_widths[0] // 2)
+    def fmt_row(row):
+        return " | ".join(str(cell).ljust(col_widths[i]) for i, cell in enumerate(row))
+    sep_line = "-+-".join("-" * w for w in col_widths)
+    table_str = fmt_row(table_header) + "\n" + sep_line + "\n" + "\n".join(fmt_row(row) for row in table_rows)
+    uv_remark = table_str
 
 for e in signals_result:
     if e["Name"] == "MCU_UnderVolt":
@@ -312,6 +448,8 @@ def build_mcu_remark(t_ms):
 
 for e in signals_result:
     if not e["Name"].startswith("MCU_"):
+        continue
+    if e["Name"] in ("MCU_LowTemp", "MCU_UnderVolt"):
         continue
     if e.get("Remark"):
         continue
@@ -452,13 +590,20 @@ tbl.auto_set_font_size(False)
 tbl.set_fontsize(9)
 tbl.scale(1, 1.2)
 
-# Adjust column widths: make "ERROR Signal" 1.5x and "Status" 0.5x
+
+# Adjust column widths: shrink 'Instance' by half, add to 'Remark'
 if rows:
     base_w_error = tbl[0, 0].get_width()
     base_w_status = tbl[0, 1].get_width()
+    base_w_instance = tbl[0, 2].get_width()
+    base_w_failts = tbl[0, 3].get_width()
+    base_w_remark = tbl[0, 4].get_width()
     for r in range(len(rows) + 1):  # +1 for header row
         tbl[r, 0].set_width(base_w_error * 1.5)
         tbl[r, 1].set_width(base_w_status * 0.5)
+        tbl[r, 2].set_width(base_w_instance * 0.5)
+        tbl[r, 3].set_width(base_w_failts)
+        tbl[r, 4].set_width(base_w_remark + base_w_instance * 0.5)
 
 # Color + formatting
 for (r, c), cell in tbl.get_celld().items():
