@@ -291,30 +291,42 @@ if len(lt_instances) > 0 and len(temp_events) > 0:
         window_vals = [v for _, v in temp_events[start:end]]
         return min(window_vals) if window_vals else ""
 
-    table_header = ["No.", "SoC", "BMSS", "Vmcu", "Vbat", "Temp(-38°C)"]
+    def get_vmcu_min_3before_3after(ts_ms, cap_events):
+        idx = None
+        for i, (t, _) in enumerate(cap_events):
+            if t >= ts_ms:
+                idx = i
+                break
+        if idx is None:
+            idx = len(cap_events)
+        start = max(0, idx - 3)
+        end = min(len(cap_events), idx + 3)
+        window_vals = [v for _, v in cap_events[start:end]]
+        return min(window_vals) if window_vals else ""
+
+    table_header = ["No.", "SoC", "BMSS", "Vmcu(min6)", "Vbat", "Temp(-38°C)"]
     table_rows = []
     for idx, inst in enumerate(lt_instances, 1):
         t_ms = inst.get("Start_ms")
         if t_ms is None:
-            soc_pct = bms_state = cap_volt = vbat = temp_val = None
+            soc_pct = bms_state = cap_volt = vbat = temp_val = vmcu_min = None
             bms_transition = "N/A"
         else:
             before_ev, after_ev = get_bms_state_before_after(soc_events, t_ms)
-            cap_ev = find_last_event(cap_events, t_ms)
             soc_ev = find_last_event(soc_events, t_ms)
             _, soc_pct, bms_state, *rest = soc_ev if soc_ev else (None, None, None, None)
             vbat = rest[0] if rest else None
             before_bms = int(before_ev[2]) if before_ev else None
             after_bms = int(after_ev[2]) if after_ev else None
             bms_transition = f"{before_bms}->{after_bms}" if before_bms is not None and after_bms is not None else "N/A"
-            cap_volt = cap_ev[1] if cap_ev is not None else None
             temp_val = get_temp_window(t_ms, temp_events)
+            vmcu_min = get_vmcu_min_3before_3after(t_ms, cap_events)
 
         table_rows.append([
             str(idx),
             f"{soc_pct:.2f}" if soc_pct is not None else "",
             bms_transition,
-            f"{cap_volt}" if cap_volt is not None else "",
+            f"{vmcu_min}" if vmcu_min != "" else "",
             f"{vbat:.1f}" if vbat is not None else "",
             f"{temp_val}" if temp_val != "" else ""
         ])
@@ -363,7 +375,6 @@ if uv_any:
                 vmin_events.append((ts_ms, vmin))
 
     def get_vmin_window(ts_ms, vmin_events, window=5):
-        # Find index of closest event
         idx = None
         for i, (t, _) in enumerate(vmin_events):
             if t >= ts_ms:
@@ -371,42 +382,53 @@ if uv_any:
                 break
         if idx is None:
             idx = len(vmin_events)
-        # Get 5 before, 1 at, 5 after
-        start = max(0, idx - 5)
-        end = min(len(vmin_events), idx + 6)
+        start = max(0, idx - window)
+        end = min(len(vmin_events), idx + window + 1)
         window_vals = [v for _, v in vmin_events[start:end]]
         return min(window_vals) if window_vals else ""
 
-    table_header = ["No.", "SoC", "BMSS", "Vmcu", "Vbat", "Vmin"]
+    def get_vmcu_min_3before_3after(ts_ms, cap_events):
+        idx = None
+        for i, (t, _) in enumerate(cap_events):
+            if t >= ts_ms:
+                idx = i
+                break
+        if idx is None:
+            idx = len(cap_events)
+        start = max(0, idx - 3)
+        end = min(len(cap_events), idx + 3)
+        window_vals = [v for _, v in cap_events[start:end]]
+        return min(window_vals) if window_vals else ""
+
+    table_header = ["No.", "SoC", "BMSS", "Vmcu(min6)", "Vbat", "Vmin"]
     table_rows = []
     for idx, inst in enumerate(uv_instances, 1):
         t_ms = inst.get("Start_ms")
         if t_ms is None:
-            soc_pct = bms_state = cap_volt = vbat = vmin_val = None
+            soc_pct = bms_state = vbat = vmin_val = vmcu_min = None
             bms_transition = "N/A"
         else:
             before_ev, after_ev = get_bms_state_before_after(soc_events, t_ms)
-            cap_ev = find_last_event(cap_events, t_ms)
             soc_ev = find_last_event(soc_events, t_ms)
             _, soc_pct, bms_state, *rest = soc_ev if soc_ev else (None, None, None, None)
             vbat = rest[0] if rest else None
             before_bms = int(before_ev[2]) if before_ev else None
             after_bms = int(after_ev[2]) if after_ev else None
             bms_transition = f"{before_bms}->{after_bms}" if before_bms is not None and after_bms is not None else "N/A"
+            vmin_val = get_vmin_window(t_ms, vmin_events)
+            vmcu_min = get_vmcu_min_3before_3after(t_ms, cap_events)
 
             # Only FAIL if both before and after BMS state are 3
             if before_bms == 3 and after_bms == 3:
                 uv_all_soc_below_2 = False
             if soc_pct is not None and soc_pct >= 2.0:
                 uv_all_soc_below_2 = False
-            cap_volt = cap_ev[1] if cap_ev is not None else None
-            vmin_val = get_vmin_window(t_ms, vmin_events)
 
         table_rows.append([
             str(idx),
             f"{soc_pct:.2f}" if soc_pct is not None else "",
             bms_transition,
-            f"{cap_volt}" if cap_volt is not None else "",
+            f"{vmcu_min}" if vmcu_min != "" else "",
             f"{vbat:.1f}" if vbat is not None else "",
             f"{vmin_val:.2f}" if isinstance(vmin_val, float) else ""
         ])
