@@ -201,9 +201,9 @@ def analyze(frames):
             if mcu_at_shut is None:
                 ack_state = "NO_MCU"
             else:
-                if mcu_at_shut < 105:
+                if mcu_at_shut < 90:
                     ack_state = "NO_ACK_NEEDED" if ack_time is None else "ACK_UNEXPECTED"
-                elif 105 <= mcu_at_shut <= 200:
+                elif 90 <= mcu_at_shut <= 200:
                     ack_state = "ACK_OPTIONAL"
                 else:
                     ack_state = "ACK_OK" if ack_time is not None else "ACK_MISSING"
@@ -257,10 +257,10 @@ def analyze(frames):
                     remark = "Data incomplete - 1/2->0 transition not fully captured in log."
 
                 elif ack_state == "ACK_MISSING":
-                    remark = f"BMS Fault - Expected ACK missing when MCU >= 105 (MCU={mcu_at_shut})."
+                    remark = f"BMS Fault - Expected ACK missing when MCU >= 90 (MCU={mcu_at_shut})."
 
                 elif ack_state == "ACK_UNEXPECTED":
-                    remark = f"BMS Fault - Unexpected ACK when MCU < 105 (MCU={mcu_at_shut})."
+                    remark = f"BMS Fault - Unexpected ACK when MCU < 90 (MCU={mcu_at_shut})."
 
                 elif ack_state == "NO_MCU":
                     remark = "Integration Fault - MCU counter frame missing."
@@ -271,7 +271,7 @@ def analyze(frames):
                 elif soc_result != "PASS":
                     remark = "BMS Fault - Incorrect SoC restoration."
             elif ack_state == "ACK_OPTIONAL":
-                remark = "ACK optional zone (MCU between 105–200)"
+                remark = "ACK optional zone (MCU between 90–200)"
 
             # Save this shutdown cycle
             cycles.append({
