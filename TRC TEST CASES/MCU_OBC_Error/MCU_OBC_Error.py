@@ -4,6 +4,8 @@ import json
 import re
 from datetime import datetime
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.rcParams['font.family'] = 'DejaVu Sans'
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
@@ -18,7 +20,7 @@ pattern = re.compile(
     r"([0-9A-Fa-f]+)\s+(\d+)\s+(.*)"
 )
 
-OUTPUT_ENCODING = "cp1252"
+OUTPUT_ENCODING = "utf-8"
 
 SOC_CAN_ID = 0x0109
 MCU_CAP_CAN_ID = 0x0715
@@ -87,13 +89,33 @@ def find_last_event(events, ts_ms):
 # -----------------------------------------------------
 # Load TRC input
 # -----------------------------------------------------
-if len(sys.argv) < 2:
-    print("ERROR: No TRC file provided!")
-    sys.exit(1)
 
-trc_path = sys.argv[1]
-if not os.path.exists(trc_path):
-    print(f"ERROR: File not found: {trc_path}")
+# --- TRC file selection logic ---
+trc_path = None
+if len(sys.argv) >= 2:
+    trc_path = sys.argv[1]
+    if not os.path.exists(trc_path):
+        print(f"ERROR: File not found: {trc_path}")
+        trc_path = None
+
+if trc_path is None:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        trc_path = filedialog.askopenfilename(
+            title="Select TRC file",
+            filetypes=[("TRC files", "*.trc"), ("All files", "*.*")]
+        )
+        root.destroy()
+    except Exception as e:
+        print("ERROR: No TRC file provided and failed to open file dialog.")
+        print(f"Details: {e}")
+        sys.exit(1)
+
+if not trc_path:
+    print("ERROR: No TRC file provided!")
     sys.exit(1)
 
 folder = os.path.dirname(os.path.abspath(__file__))
@@ -216,41 +238,50 @@ uv_any = len(uv_instances) > 0
 uv_all_soc_below_2 = True if uv_any else False
 uv_remark = ""
 
+def get_bms_state_before_after(events, t_ms):
+    before = None
+    after = None
+    for i, ev in enumerate(events):
+        if ev[0] < t_ms:
+            before = ev
+        elif ev[0] > t_ms:
+            after = ev
+            break
+    return before, after
+
 for inst in uv_instances:
     t_ms = inst.get("Start_ms")
     if t_ms is None:
         uv_all_soc_below_2 = False
         continue
 
-    soc_ev = find_last_event(soc_events, t_ms)
+    before_ev, after_ev = get_bms_state_before_after(soc_events, t_ms)
     cap_ev = find_last_event(cap_events, t_ms)
 
-    if soc_ev is None:
-        uv_all_soc_below_2 = False
-        continue
-
-    # soc_ev: (ts_ms, soc_pct, bmss_state, vbat_V)
-    _, soc_pct, bms_state, *rest = soc_ev
+    # Use closest event for SoC/vbat for remark, but use before/after for BMS state check
+    soc_ev = find_last_event(soc_events, t_ms)
+    _, soc_pct, bms_state, *rest = soc_ev if soc_ev else (None, None, None, None)
     vbat = rest[0] if rest else None
 
-    # If BMSS == 3 at UV detection, treat as FAIL regardless of SoC.
-    if int(bms_state) == 3:
+    before_bms = int(before_ev[2]) if before_ev else None
+    after_bms = int(after_ev[2]) if after_ev else None
+    # Show BMS state transition in remark (ASCII arrow for compatibility)
+    bms_transition = f"BMS State: {before_bms} -> {after_bms}" if before_bms is not None and after_bms is not None else "BMS State: N/A"
+    # Only FAIL if both before and after BMS state are 3
+    if before_bms == 3 and after_bms == 3:
         uv_all_soc_below_2 = False
 
-    if soc_pct >= 2.0:
+    if soc_pct is not None and soc_pct >= 2.0:
         uv_all_soc_below_2 = False
 
     if not uv_remark:
         cap_volt = cap_ev[1] if cap_ev is not None else None
-
-        first_line = f"SoC={soc_pct:.2f}% (BMSS={int(bms_state)})"
+        first_line = f"SoC={soc_pct:.2f}% ({bms_transition})"
         lines = [first_line]
-
         if cap_volt is not None:
             lines.append(f"MCU_CAP_Volt={cap_volt} V")
         if vbat is not None:
             lines.append(f"Vbat={vbat:.1f} V")
-
         uv_remark = "\n".join(lines)
 
 for e in signals_result:
