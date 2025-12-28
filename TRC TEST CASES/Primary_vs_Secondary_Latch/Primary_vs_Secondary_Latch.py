@@ -1,4 +1,3 @@
-
 import re
 import struct
 import sys
@@ -190,11 +189,12 @@ def parse_trc(fp, progress_cb=None, total_lines=None):
             if m:
                 ts = parse_ts(m.group(1))
                 d = m.group(3).split()
-                if ts and len(d) >= 5:
-                    latch = int(d[4], 16)
+                if ts and len(d) >= 6:
+                    latch = int(d[5], 16)
                     latch_list.append((ts, latch))
 
-                    if latch != 0:
+                    # Only append SoC if 5th data byte (d[4]) is non-zero (valid SoC)
+                    if int(d[4], 16) != 0:
                         soc = (int(d[0], 16) | (int(d[1], 16) << 8)) * 0.01
                         soc_list.append((ts, soc))
 
@@ -682,29 +682,25 @@ def draw_charging_table(
     for row_data in rows:
         if row_data[0] == "INACTIVE":
             _, sv, ev, dur, ah, tavg = row_data
-            if ah is not None and abs(ah) < 0.005:
-                ah = 0.0
             draw_row(
                 [
                     f"INACTIVE: {sv:.2f}% → {ev:.2f}%",
                     dur,
-                    f"{ah:.2f} Ah",
+                    f"{ah:.3f} Ah",
                     f"{tavg:.1f} C" if tavg is not None else "",
                 ],
                 bg="#ffcccc",
             )
         else:
             _, sv, ev, dur, ah, tavg = row_data
-            if ah is not None and abs(ah) < 0.005:
-                ah = 0.0
-            draw_row([f"{sv:.2f}% → {ev:.2f}%", dur, f"{ah:.2f} Ah", f"{tavg:.1f} C" if tavg else ""])
+            draw_row([f"{sv:.2f}% → {ev:.2f}%", dur, f"{ah:.3f} Ah", f"{tavg:.1f} C" if tavg else ""])
 
     draw_row(initial_to_final_row, bg="#e6f2ff")
 
     if latch_row:
         draw_row(latch_row, bg="#fce88c")
 
-    draw_row(["TOTAL", total_time, f"{total_ah:.2f} Ah", ""], bg="#a0d0ff")
+        draw_row(["TOTAL", total_time, f"{total_ah:.3f} Ah", ""], bg="#a0d0ff")
 
     vmax_text = "N/A" if vmax_peak is None else f"{vmax_peak} mV"
     vmin_text = "N/A" if vmin_at_latch is None else f"{vmin_at_latch} mV"
@@ -801,7 +797,7 @@ def main():
             initial_to_final_row=[
                 "Initial → Final SoC",
                 "0hr,0min,0s",
-                "0.00 Ah",
+                "0.000 Ah",
                 "",
             ],
             total_time="0hr,0min,0s",
@@ -902,7 +898,7 @@ def main():
             initial_to_final_row=[
                 "Initial → Final SoC",
                 "0hr,0min,0s",
-                "0.00 Ah",
+                "0.000 Ah",
                 "",
             ],
             total_time="0hr,0min,0s",
@@ -988,13 +984,15 @@ def main():
     else:
         latch_duration_td = timedelta(0)
 
+    # Initial → Final SoC row: duration is sum of ACTIVE only, Cap Exchange and Temp Avg are totals for all rows
+    active_rows = [row for row in rows if row[0] == "ACTIVE"]
+    active_duration_td = sum((parse_duration_str(row[3]) for row in active_rows), timedelta(0))
     initial_to_final = format_duration(active_duration_td)
-
-    init_ah_str = f"{initial_to_final_ah:.2f} Ah" if initial_to_final_ah is not None else ""
+    # Cap Exchange and Temp Avg: use total_ah and initial_to_final_tavg already calculated above (all rows)
+    init_ah_str = f"{total_ah:.2f} Ah" if total_ah is not None else ""
     init_tavg_str = (
         f"{initial_to_final_tavg:.1f} C" if initial_to_final_tavg is not None else ""
     )
-
     initial_to_final_row = [
         "Initial → Final SoC",
         initial_to_final,
@@ -1009,11 +1007,17 @@ def main():
         latch_ts, vmin_list, vmax_list
     )
     if latch_type == "NA":
-        vmin_f, vmax_f = last_active_v_pair(vmin_list, vmax_list, intervals, session_start_ts, session_end_ts)
-        if vmax_at_latch is None:
-            vmax_at_latch = vmax_f
-        if vmin_at_latch is None:
-            vmin_at_latch = vmin_f
+        # Find global maximum Vmax and corresponding Vmin
+        if vmax_list and vmin_list:
+            n = min(len(vmax_list), len(vmin_list))
+            vmax_values = vmax_list[:n]
+            vmin_values = vmin_list[:n]
+            max_vmax_idx = max(range(n), key=lambda i: vmax_values[i][1])
+            vmax_at_latch = int(vmax_values[max_vmax_idx][1])
+            vmin_at_latch = int(vmin_values[max_vmax_idx][1])
+        else:
+            vmax_at_latch = None
+            vmin_at_latch = None
 
     result = decide_pass_fail(latch_ts, vmax_list, session_start_ts, session_end_ts)
 
@@ -1082,7 +1086,7 @@ if __name__ == "__main__":
                     initial_to_final_row=[
                         "Initial → Final SoC",
                         "0hr,0min,0s",
-                        "0.00 Ah",
+                        "0.000 Ah",
                         "",
                     ],
                     total_time="0hr,0min,0s",
