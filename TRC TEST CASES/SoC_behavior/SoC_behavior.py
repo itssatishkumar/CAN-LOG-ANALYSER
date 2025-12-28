@@ -8,6 +8,7 @@ from datetime import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+import numpy as np
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
@@ -96,12 +97,12 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
             # Track latest BMS state (even if 0) for use with current frames
             last_bms_state_any = bms_state
 
-            # ignore only BMS state = 0 for SoC analysis
-            if bms_state == 0:
-                continue
-
             timestamps_ms.append(ts_ms)
-            soc_list.append(soc)
+            # Mark SoC as NaN if BMS state is 0
+            if bms_state == 0:
+                soc_list.append(float('nan'))
+            else:
+                soc_list.append(soc)
             bms_state_list.append(bms_state)
             hhmm_list.append(dt.strftime("%H:%M:%S"))
             full_ts_list.append(ts_str)
@@ -147,6 +148,48 @@ df = pd.DataFrame({
     "full_ts": full_ts_list
 })
 
+# Remove rows where SoC is NaN for further analysis, but keep original for traceability
+df_valid = df.dropna(subset=["SoC"]).reset_index(drop=True)
+# Strict filter: only rows where BMS != 0 (data[4] != 0)
+
+# Remove the first valid SoC after every BMS state 0 period
+bms_full = df["BMS"].values
+to_ignore = set()
+for i in range(1, len(bms_full)):
+    if bms_full[i-1] == 0 and bms_full[i] != 0:
+        # Find the corresponding index in df_valid
+        ts_val = df["ts"].iloc[i]
+        idx_valid = df_valid.index[df_valid["ts"] == ts_val].tolist()
+        if idx_valid:
+            to_ignore.add(idx_valid[0])
+
+if to_ignore:
+    df_valid = df_valid.drop(list(to_ignore)).reset_index(drop=True)
+
+# Ensure all delta calculations only use valid SoC transitions (both previous and current BMS != 0)
+soc_arr = df_valid["SoC"].values
+ts_arr = df_valid["ts"].values
+bms_arr = df_valid["BMS"].values
+
+dsoc_arr = abs(soc_arr[1:] - soc_arr[:-1])
+dt_arr = ts_arr[1:] - ts_arr[:-1]
+bms_prev = bms_arr[:-1]
+bms_next = bms_arr[1:]
+
+# Only consider transitions where both previous and current BMS != 0 and dt < 3000 ms
+mask = (dt_arr < 3000) & (bms_prev != 0) & (bms_next != 0)
+if not mask.any():
+    print("No valid delta found!")
+    sys.exit(1)
+
+valid_indices = mask.nonzero()[0]
+max_delta_idx = valid_indices[dsoc_arr[mask].argmax()]
+delta = dsoc_arr[max_delta_idx]
+dt_ms = dt_arr[max_delta_idx]
+prev_soc = soc_arr[max_delta_idx]
+curr_soc = soc_arr[max_delta_idx + 1]
+idx = max_delta_idx
+
 
 def detect_soc_stuck_odo(df, odo_events, min_km=3.0, max_soc_delta=1.0, max_odo_gap_ms=3000):
     if len(odo_events) < 2:
@@ -154,6 +197,14 @@ def detect_soc_stuck_odo(df, odo_events, min_km=3.0, max_soc_delta=1.0, max_odo_
 
     odo_sorted = sorted(odo_events, key=lambda x: x[0])
     n = len(odo_sorted)
+
+    # Identify SoC indices to ignore (first valid after BMS=0)
+    bms_full = df["BMS"].values
+    ts_full = df["ts"].values
+    ignore_ts = set()
+    for i in range(1, len(bms_full)):
+        if bms_full[i-1] == 0 and bms_full[i] != 0:
+            ignore_ts.add(ts_full[i])
 
     j = 0
     for i in range(n):
@@ -177,8 +228,15 @@ def detect_soc_stuck_odo(df, odo_events, min_km=3.0, max_soc_delta=1.0, max_odo_
         if has_large_gap:
             continue
 
+
         seg = df[(df["ts"] >= t_start) & (df["ts"] <= t_end)]
+        # Remove ignored SoC samples
+        seg = seg[~seg["ts"].isin(ignore_ts)]
         if seg.empty:
+            continue
+
+        # Only judge if all SoC in segment are >= 1%
+        if (seg["SoC"] < 1.0).any():
             continue
 
         soc_start = seg["SoC"].iloc[0]
@@ -193,34 +251,27 @@ def detect_soc_stuck_odo(df, odo_events, min_km=3.0, max_soc_delta=1.0, max_odo_
 
 odo_soc_stuck, odo_stuck_first_soc, odo_stuck_first_ts = detect_soc_stuck_odo(df, odo_events)
 
-# -----------------------------------------------------
-# FIND VALID DELTAS  (CORRECT LOGIC)
-# -----------------------------------------------------
-valid = []
 
-for i in range(1, len(df)):
-    prev = df.iloc[i - 1]
-    curr = df.iloc[i]
+# Vectorized delta calculation for speed
+soc_arr = df_valid["SoC"].values
+ts_arr = df_valid["ts"].values
 
-    dsoc = abs(curr.SoC - prev.SoC)
-    dt_ms = curr.ts - prev.ts
+dsoc_arr = abs(soc_arr[1:] - soc_arr[:-1])
+dt_arr = ts_arr[1:] - ts_arr[:-1]
 
-    if dt_ms >= 3000:
-        continue
-    if curr.BMS == 0:
-        continue
-
-    valid.append((i, dsoc, dt_ms))
-
-if not valid:
+# Only consider transitions with dt < 3000 ms
+mask = dt_arr < 3000
+if not mask.any():
     print("No valid delta found!")
     sys.exit(1)
 
-valid.sort(key=lambda x: x[1], reverse=True)
-
-idx, delta, dt_ms = valid[0]
-prev_soc = df.loc[idx - 1, "SoC"]
-curr_soc = df.loc[idx, "SoC"]
+valid_indices = mask.nonzero()[0]
+max_delta_idx = valid_indices[dsoc_arr[mask].argmax()]
+delta = dsoc_arr[max_delta_idx]
+dt_ms = dt_arr[max_delta_idx]
+prev_soc = soc_arr[max_delta_idx]
+curr_soc = soc_arr[max_delta_idx + 1]
+idx = max_delta_idx
 
 # -----------------------------------------------------
 # SUMMARY DATA
@@ -229,7 +280,7 @@ summary = {
     "Final_SoC": round(df["SoC"].iloc[-1], 2),
     "Max_Delta_SoC": round(delta, 2),
     "SoC_Transition": f"{round(prev_soc,2)} % to {round(curr_soc,2)} %",
-    "Timestamp_of_Max_Delta": df.loc[idx, "full_ts"],
+    "Timestamp_of_Max_Delta": df_valid.loc[idx + 1, "full_ts"],  # t2 timestamp where SoC observed as 0.0
     "Delta_Time_ms": round(dt_ms, 2),
     "ODO_SoC_Stuck": bool(odo_soc_stuck),
     "ODO_Stuck_First_SoC": odo_stuck_first_soc,
@@ -304,10 +355,14 @@ print(f"ASCII Summary saved to JSON: {json_summary_path}")
 # SOC PLOT
 # -----------------------------------------------------
 plt.figure(figsize=(12, 5))
-plt.plot(df["ts"], df["SoC"], linewidth=2, label="SoC (%)")
-plt.scatter(df.loc[idx, "ts"], df.loc[idx, "SoC"], s=90, c="red", zorder=5, label="Max SoC Jump")
+# Only plot SoC values that are actually considered for SoC delta computation
+valid_plot_indices = np.unique(np.concatenate([valid_indices, valid_indices + 1]))
+ts_plot = df_valid["ts"].values[valid_plot_indices]
+soc_plot = df_valid["SoC"].values[valid_plot_indices]
+plt.plot(ts_plot, soc_plot, linewidth=2, label="SoC (Delta Computed)")
+plt.scatter(df_valid.loc[idx, "ts"], df_valid.loc[idx, "SoC"], s=90, c="red", zorder=5, label="Max SoC Jump")
 
-plt.title("SoC vs Time")
+plt.title("SoC vs Time (Delta Computed Only)")
 plt.xlabel("Time")
 plt.ylabel("SoC (%)")
 plt.grid(True, linestyle="--", alpha=0.4)
