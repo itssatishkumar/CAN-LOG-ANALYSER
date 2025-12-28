@@ -1,5 +1,3 @@
-
-
 import os
 import sys
 import json
@@ -304,7 +302,7 @@ if len(lt_instances) > 0 and len(temp_events) > 0:
         window_vals = [v for _, v in cap_events[start:end]]
         return min(window_vals) if window_vals else ""
 
-    table_header = ["No.", "SoC", "BMSS", "Vmcu(min6)", "Vbat", "Temp(-38°C)"]
+    table_header = ["No.", "SoC", "BMSS", "Vmcu", "Vbat", "Temp(-38°C)"]
     table_rows = []
     for idx, inst in enumerate(lt_instances, 1):
         t_ms = inst.get("Start_ms")
@@ -400,7 +398,7 @@ if uv_any:
         window_vals = [v for _, v in cap_events[start:end]]
         return min(window_vals) if window_vals else ""
 
-    table_header = ["No.", "SoC", "BMSS", "Vmcu(min6)", "Vbat", "Vmin"]
+    table_header = ["No.", "SoC", "BMSS", "Vmcu", "Vbat", "Vmin"]
     table_rows = []
     for idx, inst in enumerate(uv_instances, 1):
         t_ms = inst.get("Start_ms")
