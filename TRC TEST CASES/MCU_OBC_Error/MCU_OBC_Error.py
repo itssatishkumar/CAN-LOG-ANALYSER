@@ -1,3 +1,5 @@
+
+
 import os
 import sys
 import json
@@ -466,10 +468,102 @@ def build_mcu_remark(t_ms):
     return "\n".join(lines)
 
 
+
+
+# MCU_OverVolt remark table generation (like UnderVolt, but Vmcu=max6, and Vmax from first two bytes of 0x012C)
+ov_state = error_states.get("MCU_OverVolt", {"instances": []})
+ov_instances = ov_state["instances"]
+if len(ov_instances) > 0:
+    def get_vmcu_max_5before_5after(ts_ms, cap_events):
+        idx = None
+        for i, (t, _) in enumerate(cap_events):
+            if t >= ts_ms:
+                idx = i
+                break
+        if idx is None:
+            idx = len(cap_events)
+        start = max(0, idx - 5)
+        end = min(len(cap_events), idx + 5)
+        window_vals = [v for _, v in cap_events[start:end]]
+        return max(window_vals) if window_vals else ""
+
+    # Vmax extraction from 0x012C, bytes 0,1, little endian, scale 0.1
+    VMAX_CAN_ID = 0x012C
+    vmax_events = []
+    with open(trc_path, "r", encoding="utf-8", errors="ignore") as trc:
+        for line_idx, line in enumerate(trc, 1):
+            m = pattern.match(line)
+            if not m:
+                continue
+            can_id = int(m.group(4), 16)
+            dlc = int(m.group(5))
+            data_bytes = m.group(6).strip().split()
+            if can_id == VMAX_CAN_ID and dlc >= 2 and len(data_bytes) >= 2:
+                data = [int(b, 16) for b in data_bytes[:dlc]]
+                vmax_raw = data[0] | (data[1] << 8)
+                vmax = vmax_raw * 0.1
+                date_str, time_str, ms_str = m.group(1), m.group(2), m.group(3)
+                _, ts_ms, _ = fast_parse_ts(date_str, time_str, ms_str)
+                vmax_events.append((ts_ms, vmax))
+
+    def get_vmax_window(ts_ms, vmax_events, window=5):
+        idx = None
+        for i, (t, _) in enumerate(vmax_events):
+            if t >= ts_ms:
+                idx = i
+                break
+        if idx is None:
+            idx = len(vmax_events)
+        start = max(0, idx - window)
+        end = min(len(vmax_events), idx + window)
+        window_vals = [v for _, v in vmax_events[start:end]]
+        return max(window_vals) if window_vals else ""
+
+    table_header = ["No.", "SoC", "BMSS", "Vmcu", "Vbat", "Vmax"]
+    table_rows = []
+    for idx, inst in enumerate(ov_instances, 1):
+        t_ms = inst.get("Start_ms")
+        if t_ms is None:
+            soc_pct = bms_state = vbat = vmax_val = vmcu_max = None
+            bms_transition = "N/A"
+        else:
+            before_ev, after_ev = get_bms_state_before_after(soc_events, t_ms)
+            soc_ev = find_last_event(soc_events, t_ms)
+            _, soc_pct, bms_state, *rest = soc_ev if soc_ev else (None, None, None, None)
+            vbat = rest[0] if rest else None
+            before_bms = int(before_ev[2]) if before_ev else None
+            after_bms = int(after_ev[2]) if after_ev else None
+            bms_transition = f"{before_bms}->{after_bms}" if before_bms is not None and after_bms is not None else "N/A"
+            vmax_val = get_vmax_window(t_ms, vmax_events)
+            vmcu_max = get_vmcu_max_5before_5after(t_ms, cap_events)
+
+        table_rows.append([
+            str(idx),
+            f"{soc_pct:.2f}" if soc_pct is not None else "",
+            bms_transition,
+            f"{vmcu_max}" if vmcu_max != "" else "",
+            f"{vbat:.1f}" if vbat is not None else "",
+            f"{vmax_val:.2f}" if isinstance(vmax_val, float) else ""
+        ])
+
+    col_widths = [max(len(str(row[i])) for row in ([table_header] + table_rows)) for i in range(len(table_header))]
+    col_widths[0] = max(2, col_widths[0] // 2)
+    def fmt_row(row):
+        return " | ".join(str(cell).ljust(col_widths[i]) for i, cell in enumerate(row))
+    sep_line = "-+-".join("-" * w for w in col_widths)
+    table_str = fmt_row(table_header) + "\n" + sep_line + "\n" + "\n".join(fmt_row(row) for row in table_rows)
+    ov_remark = table_str
+
+    for e in signals_result:
+        if e["Name"] == "MCU_OverVolt":
+            e["Remark"] = ov_remark
+            break
+
+# For all other MCU_ signals, only add generic remark if not already set and not one of the table types
 for e in signals_result:
     if not e["Name"].startswith("MCU_"):
         continue
-    if e["Name"] in ("MCU_LowTemp", "MCU_UnderVolt"):
+    if e["Name"] in ("MCU_LowTemp", "MCU_UnderVolt", "MCU_OverVolt"):
         continue
     if e.get("Remark"):
         continue
