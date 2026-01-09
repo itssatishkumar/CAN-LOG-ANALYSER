@@ -962,11 +962,15 @@ class CANLogDebugger(QWidget):
         self._start_fw_scan(path)
 
         if file_ext == ".trc":
+            self._start_mcu_detection(path)
             self._start_vcu_reset_check(path, track_scan=True)
             self._start_bms_reset_check(path, track_scan=True)
         else:
             self.reset_vcu_fields()
             self.reset_bms_fields()
+            self.tx_mcu.setText("N/A")
+            self.tx_serial.setText("N/A")
+            self.tx_os.setText("N/A")
 
     def on_browse(self):
         ft = self.ft_combo.currentText()
