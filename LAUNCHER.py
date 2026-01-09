@@ -1,4 +1,3 @@
-
 import sys
 import os
 import subprocess
@@ -229,6 +228,37 @@ class BMSResetThread(QThread):
             self.finished_err.emit(str(e))
 
 # -------------------------------------------------------
+# MCU DETECTION THREAD
+# -------------------------------------------------------
+class MCUDetectionThread(QThread):
+    finished_ok = Signal(dict)
+    finished_err = Signal(str)
+
+    def __init__(self, trc_file: str, script_dir: str):
+        super().__init__()
+        self.trc_file = trc_file
+        self.script_dir = script_dir
+
+    def run(self):
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, os.path.join(self.script_dir, "MCU_detection.py"), self.trc_file],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            out, err = proc.communicate()
+
+            if proc.returncode != 0:
+                self.finished_err.emit(err or "MCU detection failed")
+                return
+
+            self.finished_ok.emit(json.loads(out.strip()))
+
+        except Exception as e:
+            self.finished_err.emit(str(e))
+
+# -------------------------------------------------------
 # MAIN GUI
 # -------------------------------------------------------
 class CANLogDebugger(QWidget):
@@ -331,6 +361,10 @@ class CANLogDebugger(QWidget):
         (self.lb_xavier_fw, self.tx_xavier_fw) = fw_field("XAVIER FIRMWARE")
         (self.lb_distance, self.tx_distance) = fw_field("DISTANCE COVERED")
 
+        (self.lb_mcu, self.tx_mcu) = fw_field("MCU BRANCH")
+        (self.lb_serial, self.tx_serial) = fw_field("SERIAL NO")
+        (self.lb_os, self.tx_os) = fw_field("OS Version & OS Build No")
+
         bms_labels = [
             self.lb_hw,
             self.lb_fw,
@@ -347,6 +381,10 @@ class CANLogDebugger(QWidget):
         style_label(self.lb_xavier_fw, "#1FA37A")
         style_label(self.lb_distance, "#1FA37A")
 
+        style_label(self.lb_mcu, "#006400")
+        style_label(self.lb_serial, "#006400")
+        style_label(self.lb_os, "#006400")
+
         grid = QGridLayout()
         grid.setSpacing(8)
         grid.setContentsMargins(5, 5, 5, 5)
@@ -361,6 +399,10 @@ class CANLogDebugger(QWidget):
             (self.lb_stark_cfg, self.tx_stark_cfg),
             (self.lb_xavier_fw, self.tx_xavier_fw),
             (self.lb_distance, self.tx_distance),
+
+            (self.lb_mcu, self.tx_mcu),
+            (self.lb_serial, self.tx_serial),
+            (self.lb_os, self.tx_os),
         ]
 
         for r, (l, t) in enumerate(fw_rows):
@@ -965,6 +1007,30 @@ class CANLogDebugger(QWidget):
         thread.finished_err.connect(self.on_fw_error)
         thread.finished.connect(self._on_scan_finished)
         thread.start()
+
+    def _start_mcu_detection(self, path: str):
+        self.tx_mcu.setText("...")
+        self.tx_serial.setText("...")
+        self.tx_os.setText("...")
+
+        thread = MCUDetectionThread(path, self.script_dir)
+        self.mcu_thread = thread
+        self._register_scan_task()
+
+        thread.finished_ok.connect(self.update_mcu_fields)
+        thread.finished_err.connect(self.on_mcu_error)
+        thread.finished.connect(self._on_scan_finished)
+        thread.start()
+
+    def update_mcu_fields(self, info: dict):
+        self.tx_mcu.setText(info.get("platform", "N/A"))
+        self.tx_serial.setText(info.get("serial", "N/A"))
+        self.tx_os.setText(f"{info.get('os_version', 'N/A')} & {info.get('os_build', 'N/A')}")
+
+    def on_mcu_error(self, msg: str):
+        self.tx_mcu.setText("N/A")
+        self.tx_serial.setText("N/A")
+        self.tx_os.setText("N/A")
 
     def _start_vcu_reset_check(self, path: str, track_scan: bool):
         if not os.path.exists(self.vcu_reset_script):
