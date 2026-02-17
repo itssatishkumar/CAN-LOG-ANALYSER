@@ -1,23 +1,18 @@
-#!/usr/bin/env python3
-"""
-FW_Config_checker.py (GUI-FRIENDLY VERSION)
-
-Reads a TRC file and extracts:
-- BMS HW, FW, CONFIG ID, GITSHA, MANIFEST
-- STARK FW, CONFIG
-- XAVIER FW
-- DISTANCE (initial, final, delta)
-"""
-
 import re
 import sys
 import os
 import json
 
+# -------------------- REGEX --------------------
 
-# STRICT regex for CAN ID 0402 only (DLC=8)
+# 0402 → ODO_TRIP (Little Endian, scale 0.1)
 RE_0402 = re.compile(
     r"\b0402\b\s+8\s+((?:[0-9A-Fa-f]{2}\s+){4})"
+)
+
+# 0409 → Odo (Motorola, scale 0.01)
+RE_0409 = re.compile(
+    r"\b0409\b\s+8\s+((?:[0-9A-Fa-f]{2}\s+){8})"
 )
 
 
@@ -25,13 +20,17 @@ def parse_firmware_versions(trc_path):
     if not os.path.exists(trc_path):
         return {"error": f"TRC file not found: {trc_path}"}
 
-    # Storage
+    # -------------------- Storage --------------------
     bms_hw = bms_fw = bms_cfg = bms_git = bms_manifest = None
     stark_fw = stark_cfg = xavier_fw = None
 
     # Distance
     initial_distance = None
     final_distance = None
+    odo_source = None
+
+    found_0402 = False
+    found_0409 = False
 
     def all_found():
         return all([
@@ -42,22 +41,52 @@ def parse_firmware_versions(trc_path):
     with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
 
-            # ------------------------ STRICT 0402 Distance ------------------------
-            m = RE_0402.search(line)
-            if m:
-                p = m.group(1).split()
-                if len(p) == 4:
-                    raw = (
-                        int(p[0],16)
-                        | (int(p[1],16) << 8)
-                        | (int(p[2],16) << 16)
-                        | (int(p[3],16) << 24)
-                    )
-                    dist_km = raw * 0.1
+            # =====================================================
+            # PRIORITY 1 → CAN ID 0402 (Little Endian, scale 0.1)
+            # =====================================================
+            if not found_0402:
+                m = RE_0402.search(line)
+                if m:
+                    p = m.group(1).split()
+                    if len(p) == 4:
+                        raw = (
+                            int(p[0], 16)
+                            | (int(p[1], 16) << 8)
+                            | (int(p[2], 16) << 16)
+                            | (int(p[3], 16) << 24)
+                        )
+                        dist_km = raw * 0.1
 
-                    if initial_distance is None:
-                        initial_distance = dist_km
-                    final_distance = dist_km
+                        found_0402 = True
+                        odo_source = "0402"
+
+                        if initial_distance is None:
+                            initial_distance = dist_km
+                        final_distance = dist_km
+                    continue
+
+            # =====================================================
+            # PRIORITY 2 → CAN ID 0409 (Motorola, scale 0.01)
+            # =====================================================
+            if not found_0402:
+                m2 = RE_0409.search(line)
+                if m2:
+                    p = m2.group(1).split()
+                    if len(p) >= 4:
+                        raw = (
+                            (int(p[0], 16) << 24)
+                            | (int(p[1], 16) << 16)
+                            | (int(p[2], 16) << 8)
+                            | int(p[3], 16)
+                        )
+                        dist_km = raw * 0.01
+
+                        found_0409 = True
+                        odo_source = "0409"
+
+                        if initial_distance is None:
+                            initial_distance = dist_km
+                        final_distance = dist_km
 
             # -------------------- 07A1: Firmware Versions --------------------
             if "07A1" in line:
@@ -112,14 +141,15 @@ def parse_firmware_versions(trc_path):
                         bms_manifest = f"{int(p[1],16):02X}.{int(p[2],16):02X}.{int(p[3],16):02X}"
 
             if all_found():
-                # DO NOT BREAK → allow scanning full file for final 0402
                 pass
 
-    # Final distance delta
+    # -------------------- Final Distance Calculation --------------------
     if initial_distance is not None and final_distance is not None:
-        distance_covered = round(final_distance - initial_distance, 1)
+        delta = final_distance - initial_distance
+        distance_covered = round(max(delta, 0), 2)  # prevent negative
     else:
         distance_covered = None
+        odo_source = None
 
     return {
         "BMS_HW": bms_hw,
@@ -133,7 +163,8 @@ def parse_firmware_versions(trc_path):
 
         "DIST_INITIAL_KM": initial_distance,
         "DIST_FINAL_KM": final_distance,
-        "DISTANCE_COVERED_KM": distance_covered
+        "DISTANCE_COVERED_KM": distance_covered,
+        "ODO_SOURCE": odo_source
     }
 
 
