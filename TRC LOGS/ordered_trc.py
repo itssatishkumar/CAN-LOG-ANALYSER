@@ -1,20 +1,3 @@
-#!/usr/bin/env python3
-"""
-trc_merge_and_convert.py
-
-Accept multiple .trc files (v1.1 and/or v2-like), convert v2 -> v1.1 if needed,
-remove duplicates by identical $STARTTIME, merge chronologically, produce a single
-v1.1 file (Final_Merged_v1.1.trc) and call FW_Config_checker.py with the result.
-
-Behavior matches the Cases:
-1) All v1.1 & multiple -> sort by $STARTTIME, merge, header from earliest file
-2) All v1.1 & single -> skip merge, pass that file to FW_Config_checker
-3) All v2.x -> convert each, then merge (or pass single converted file)
-4) Mixed -> convert v2 -> v1.1 then merge
-5) Duplicate $STARTTIME -> drop later duplicates (keep first)
-6) After final -> call FW_Config_checker.py with the final TRC path
-"""
-
 import os
 import re
 import sys
@@ -63,14 +46,6 @@ def read_lines(path: Path) -> List[str]:
 
 
 def extract_metadata_and_sections(path: Path) -> Dict[str, Any]:
-    """
-    Returns a dict with keys:
-      - version: str or None (e.g. '1.1' or '2.0')
-      - starttime: float or None (value from ;$STARTTIME=)
-      - starttime_str: string after 'Start time:' comment, raw preserved (if present)
-      - header_lines: list[str] header (up to dashed separator inclusive)
-      - message_lines: list[str] the rest (stripped of newline)
-    """
     lines = read_lines(path)
     version = None
     starttime = None
@@ -161,19 +136,6 @@ def parse_message_line(line: str) -> Optional[Dict[str, Any]]:
 
 
 def format_legacy_line(msg_index: int, time_offset_ms: float, direction: str, can_id: str, dlc: int, data: str, msgnum_width: int) -> str:
-    """
-    Create a well aligned legacy-style line:
-    Example:
-      "     1)     2.600  Rx       0403  8  00 00 00 00 00 00 00 00"
-    Rules:
-      - message number field width = msgnum_width (right aligned), then ')', then TWO spaces
-      - time offset right-aligned formatted with 3 decimals and width 10 (like 1208762.662)
-      - TWO spaces
-      - direction 'Rx'/'Tx' left aligned width 2
-      - 7 spaces gap to position ID column (matching earlier examples)
-      - ID right aligned width 4 (hex)
-      - two spaces, dlc, two spaces, data bytes
-    """
     dir_norm = "Rx" if direction.lower().startswith("r") else "Tx"
     id_s = str(can_id).upper()
     data_norm = " ".join(data.strip().split()) if data else ""
@@ -194,12 +156,6 @@ def format_legacy_line(msg_index: int, time_offset_ms: float, direction: str, ca
 # Conversion v2 -> v1.1 (creates converted file next to original)
 # ---------------------------
 def convert_file_to_v11(src_path: str) -> str:
-    """
-    Convert a single file from v2-ish to v1.1 style. Writes converted_<orig>.trc
-    Returns path to converted file.
-    If the file already appears to be v1.1 (has ;$FILEVERSION=1.1 and legacy header),
-    returns original path unchanged.
-    """
     p = Path(src_path)
     lines = read_lines(p)
 
@@ -249,17 +205,6 @@ def convert_file_to_v11(src_path: str) -> str:
 # Merge multiple files (after conversion to v1.1 if necessary)
 # ---------------------------
 def merge_files_chronologically(file_info_list: List[Dict[str, Any]], out_dir: Optional[str] = None) -> str:
-    """
-    file_info_list: list of dicts produced by extract_metadata_and_sections() OR by reading converted files.
-    Returns path to final merged TRC path.
-    Behavior:
-      - Remove duplicates by identical starttime (keep first occurrence in input list)
-      - Compute absolute timestamp for every message: abs_time = file.starttime + offset_ms/1000.0
-      - Merge all messages across files and sort by abs_time
-      - Re-number sequentially from 1
-      - Produce Final_Merged_v1.1.trc in out_dir (or directory of first file)
-      - Header is taken from earliest file (by starttime)
-    """
     # remove duplicates by identical starttime (keep first occurrence)
     unique_by_start = {}
     ordered_list: List[Dict[str, Any]] = []
