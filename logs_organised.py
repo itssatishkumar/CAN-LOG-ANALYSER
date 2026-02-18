@@ -33,6 +33,47 @@ STOP_WORDS = {
     "LOG", "TRC", "CSV", "DECODED", "DECODE", "FILE", "FINAL", "MERGED"
 }
 
+# -------------------------------------------------
+# 409 (Motorola 0.01) → 402 (Intel 0.1) conversion
+# -------------------------------------------------
+def convert_409_to_402(canid: str, data: str):
+    if canid.upper().lstrip("0") != "409":
+        return canid, data
+
+    try:
+        data_bytes = bytes(int(x, 16) for x in data.strip().split())
+        if len(data_bytes) != 8:
+            return canid, data
+
+        # Decode Motorola (big-endian)
+        raw1 = int.from_bytes(data_bytes[0:4], byteorder="big")
+        raw2 = int.from_bytes(data_bytes[4:8], byteorder="big")
+
+        # 409 scaling = 0.01
+        physical1 = raw1 * 0.01
+        physical2 = raw2 * 0.01
+
+        # Convert to 402 scaling = 0.1
+        raw1_402 = int(round(physical1 / 0.1))
+        raw2_402 = int(round(physical2 / 0.1))
+
+        # Clamp to 32-bit unsigned
+        raw1_402 = max(0, min(raw1_402, 0xFFFFFFFF))
+        raw2_402 = max(0, min(raw2_402, 0xFFFFFFFF))
+
+        # Encode Intel (little-endian)
+        new_bytes = (
+            raw1_402.to_bytes(4, byteorder="little") +
+            raw2_402.to_bytes(4, byteorder="little")
+        )
+
+        new_data = " ".join(f"{b:02X}" for b in new_bytes)
+
+        return "402", new_data
+
+    except Exception:
+        return canid, data
+
 def _parse_start_datetime(text: str) -> datetime:
     cleaned = text.strip().replace(".0", "")
 
@@ -208,9 +249,13 @@ def parse_trc_file(filepath: str):
         if m:
             offset = float(m.group(2))
             ftype = m.group(3)
-            canid = m.group(4)
+            canid = m.group(4).upper()
             dlc = m.group(5)
             data = m.group(6)
+
+            # 🔥 Apply 409 → 402 conversion here
+            canid, data = convert_409_to_402(canid, data)
+
             frames_raw.append((offset, ftype, canid, dlc, data))
 
     if not frames_raw:
@@ -283,7 +328,8 @@ def merge_trcs(filepaths):
     msgnum = 1
     for ts, ftype, canid, dlc, data in merged_all:
         ts_str = _format_timestamp(ts)
-        line = f"{msgnum:>6})  {ts_str}  {ftype:<7} {canid:>4}  {dlc}  {data}"
+        canid_formatted = f"{int(canid, 16):04X}"
+        line = f"{msgnum:>6})  {ts_str}  {ftype:<7} {canid_formatted}  {dlc}  {data}"
         out.append(line)
         msgnum += 1
 
