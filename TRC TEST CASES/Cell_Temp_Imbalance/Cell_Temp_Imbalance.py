@@ -18,16 +18,15 @@ PROGRESS_STEP = 0.5  # percent granularity for live progress
 # CAN IDs and thermistor byte mapping (final)
 # -----------------------------------------------------
 THERM_CAN_MAP = {
-    1: (0x0112, [0, 1, 2, 3, 4, 5]),              # Only 6 external NTCs
-    2: (0x0130, list(range(8))),
-    3: (0x0131, list(range(8))),
-    4: (0x0132, list(range(8))),
-    5: (0x0133, list(range(8))),
-    6: (0x0134, list(range(8))),
-    7: (0x0135, list(range(8))),
-    8: (0x0136, list(range(8))),
-    9: (0x0137, [0, 1]),                          # Only 2 external NTCs
-    10: (0x014F, [0, 1, 2, 3])                    # 4 Master Pack NTCs
+    1: (0x0112, [0,1,2,3,4,5]),      # ExtTherm 1-6
+    2: (0x0130, list(range(8))),     # 7-14
+    3: (0x0131, list(range(8))),     # 15-22
+    4: (0x0132, list(range(8))),     # 23-30
+    5: (0x0133, list(range(8))),     # 31-38
+    6: (0x0134, list(range(8))),     # 39-46
+    7: (0x0135, list(range(8))),     # 47-54
+    8: (0x0136, list(range(8))),     # 55-62
+    9: (0x0137, [0,1])               # 63-64
 }
 
 IMBALANCE_WARNING = 5.0   # °C
@@ -125,7 +124,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
             if can_id == msg_id:
 
                 found = True
-                temp_arr = [None] * 68     # 64 external + 4 master
+                temp_arr = [None] * 64
 
                 # Base index mapping
                 if group_id == 10:
@@ -157,7 +156,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
 active_ntc = set()
 for arr in raw_first_10s:
     for i, v in enumerate(arr):
-        if isinstance(v, int):
+        if isinstance(v, int) and v != 0:
             active_ntc.add(i)
 
 active_ntc = sorted(list(active_ntc))
@@ -171,7 +170,7 @@ for idx in active_ntc:
     if idx < 64:
         active_ntc_names.append(f"ExtTherm_{idx+1}")
     else:
-        active_ntc_names.append(f"Master_NTC_{idx-63}")
+        active_ntc_names.append(f"ExtTherm_{idx+1}")
 
 # -----------------------------------------------------
 # BUILD DF
@@ -237,10 +236,7 @@ for i in range(1, len(df)):
     max_dev_index = deviations.index(max(deviations))
     outlier_idx = active_ntc[max_dev_index]
 
-    outlier_name = (
-        f"ExtTherm_{outlier_idx+1}" if outlier_idx < 64
-        else f"Master_NTC_{outlier_idx-63}"
-    )
+    outlier_name = f"ExtTherm_{outlier_idx+1}"
 
     if imbalance > IMBALANCE_FAIL:
         fails.append({
@@ -369,7 +365,7 @@ for ntc_idx in active_ntc:
     if ntc_idx < 64:
         label = f"ExtTherm_{ntc_idx+1}"
     else:
-        label = f"Master_NTC_{ntc_idx-63}"
+       label = f"ExtTherm_{ntc_idx+1}"
 
     plt.plot(times, ntc_series[ntc_idx], label=label, linewidth=1.3)
 
@@ -399,7 +395,7 @@ if time_labels:
 
 plt.xlabel("Timestamp")
 plt.ylabel("Temperature (°C)")
-plt.title("External + Master NTC Temperature Timeseries (Active NTCs)")
+plt.title("External Thermistor Temperature Timeseries (Active NTCs)")
 plt.grid(True, alpha=0.3)
 plt.legend(loc="upper left", ncol=2, fontsize=9)
 
