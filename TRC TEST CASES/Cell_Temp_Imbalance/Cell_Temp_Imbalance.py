@@ -68,7 +68,7 @@ timestamps = []
 temps_list = []
 full_ts_list = []
 raw_first_10s = []
-
+current_temps = [None] * 64
 first_ts = None
 
 # -----------------------------------------------------
@@ -77,7 +77,7 @@ first_ts = None
 reported_max = None
 reported_min = None
 reported_delta = None
-
+bms_state = 0
 # -----------------------------------------------------
 # PARSE TRC
 # -----------------------------------------------------
@@ -115,6 +115,8 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
             reported_max = s8(data[0])
             reported_min = s8(data[1])
             reported_delta = s8(data[2])
+        if can_id == 0x109 and dlc >= 5:
+            bms_state = data[4]
 
         # -----------------------------------------------------
         # Temperature CAN frames
@@ -124,17 +126,31 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
             if can_id == msg_id:
 
                 found = True
-                temp_arr = [None] * 64
+                temp_arr = current_temps
 
                 # Base index mapping
-                if group_id == 10:
-                    base = 64  # Master NTCs
-                else:
-                    base = (group_id - 1) * 8
+                if group_id == 1:
+                    base = 0
+                elif group_id == 2:
+                    base = 6
+                elif group_id == 3:
+                    base = 14
+                elif group_id == 4:
+                    base = 22
+                elif group_id == 5:
+                    base = 30
+                elif group_id == 6:
+                     base = 38
+                elif group_id == 7:
+                    base = 46
+                elif group_id == 8:
+                    base = 54
+                elif group_id == 9:
+                    base = 62
 
                 for i, bidx in enumerate(byte_idxs):
                     idx = base + i
-                    if bidx < dlc and idx < 68:
+                    if bidx < dlc and idx < 64:
                         temp_arr[idx] = s8(data[bidx])
 
 
@@ -144,7 +160,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
             continue
 
         timestamps.append(ts_ms)
-        temps_list.append(temp_arr)
+        temps_list.append(temp_arr.copy())
         full_ts_list.append(ts_string)
 
         if ts_ms - first_ts <= 10000:
@@ -167,11 +183,7 @@ if not active_ntc:
 
 active_ntc_names = []
 for idx in active_ntc:
-    if idx < 64:
-        active_ntc_names.append(f"ExtTherm_{idx+1}")
-    else:
-        active_ntc_names.append(f"ExtTherm_{idx+1}")
-
+    active_ntc_names.append(f"ExtTherm_{idx+1}")
 # -----------------------------------------------------
 # BUILD DF
 # -----------------------------------------------------
@@ -210,13 +222,15 @@ for i in range(1, len(df)):
         if val is None:
             continue
 
+        if val == 0 and bms_state != 0:
+            continue
+
         if val == 0:
             zero_streak[ntc_idx] += 1
             if zero_streak[ntc_idx] < 3:
                 temps_valid = False
         else:
             zero_streak[ntc_idx] = 0
-
         active_vals.append(val)
 
     if not temps_valid or not active_vals:
@@ -349,9 +363,14 @@ for arr in df["temps"]:
 
         if not isinstance(val, int):
             plot_value = None
+
+        elif val == 0 and bms_state != 0:
+            plot_value = None
+
         elif val == 0:
             plot_zero_streak[ntc_idx] += 1
             plot_value = 0 if plot_zero_streak[ntc_idx] >= 3 else None
+
         else:
             plot_zero_streak[ntc_idx] = 0
             plot_value = val
@@ -362,10 +381,7 @@ plt.figure(figsize=(18, 8))
 
 for ntc_idx in active_ntc:
 
-    if ntc_idx < 64:
-        label = f"ExtTherm_{ntc_idx+1}"
-    else:
-       label = f"ExtTherm_{ntc_idx+1}"
+    label = f"ExtTherm_{ntc_idx+1}"
 
     plt.plot(times, ntc_series[ntc_idx], label=label, linewidth=1.3)
 
