@@ -29,7 +29,12 @@ OUTPUT_ENCODING = "cp1252"  # for JSON (Windows-friendly)
 # Using DBC names as-is
 
 ERROR_SIGNALS = {
-    # BO_ 600 AB_Error_Codes: 8  (ID 600 -> 0x0258)
+
+    # --------------------------------------------------
+    # BO_600  (0x0258)  AB_Error_Codes
+    # --------------------------------------------------
+
+    # Byte 0
     "OCC_ERROR":            {"can_id": 0x0258, "type": "bit", "byte": 0, "bit": 0},
     "HIGH_IMBALANCE_ERROR": {"can_id": 0x0258, "type": "bit", "byte": 0, "bit": 1},
     "PCB_TEMP_ERROR":       {"can_id": 0x0258, "type": "bit", "byte": 0, "bit": 2},
@@ -39,6 +44,7 @@ ERROR_SIGNALS = {
     "UV_ERROR":             {"can_id": 0x0258, "type": "bit", "byte": 0, "bit": 6},
     "OV_ERROR":             {"can_id": 0x0258, "type": "bit", "byte": 0, "bit": 7},
 
+    # Byte 1
     "OCD_ERROR":            {"can_id": 0x0258, "type": "bit", "byte": 1, "bit": 0},
     "FLASH_WRITE_FAIL":     {"can_id": 0x0258, "type": "bit", "byte": 1, "bit": 1},
     "EEPROM_WRITE_FAIL":    {"can_id": 0x0258, "type": "bit", "byte": 1, "bit": 2},
@@ -48,12 +54,57 @@ ERROR_SIGNALS = {
     "EEPROM_CORRUPTED":     {"can_id": 0x0258, "type": "bit", "byte": 1, "bit": 6},
     "EEPROM_COMM_FAIL":     {"can_id": 0x0258, "type": "bit", "byte": 1, "bit": 7},
 
-    # BO_ 601 Critical_Error: 8  (ID 601 -> 0x0259)
-    "SCD_ERROR":            {"can_id": 0x0259, "type": "bit", "byte": 0, "bit": 7},
-    "THERMAL_RUNAWAY":      {"can_id": 0x0259, "type": "bit", "byte": 0, "bit": 6},
-    "StartupSanityFail":    {"can_id": 0x0259, "type": "bit", "byte": 0, "bit": 5},
+    # Byte 2 – CMU Communication Failure
+    "CMU1_COMM_FAIL": {"can_id": 0x0258, "type": "bit", "byte": 2, "bit": 1},
+    "CMU2_COMM_FAIL": {"can_id": 0x0258, "type": "bit", "byte": 2, "bit": 2},
+    "CMU3_COMM_FAIL": {"can_id": 0x0258, "type": "bit", "byte": 2, "bit": 3},
+    "CMU4_COMM_FAIL": {"can_id": 0x0258, "type": "bit", "byte": 2, "bit": 4},
+    "CMU5_COMM_FAIL": {"can_id": 0x0258, "type": "bit", "byte": 2, "bit": 5},
+    "CMU6_COMM_FAIL": {"can_id": 0x0258, "type": "bit", "byte": 2, "bit": 6},
+    "CMU7_COMM_FAIL": {"can_id": 0x0258, "type": "bit", "byte": 2, "bit": 7},
 
-    # BO_ 608 AB_Error_Codes_1: 8  (ID 608 -> 0x0260)
+    # Byte 3 – Cell Open Wire Fault
+    "CMU1_CELL_OPENWIRE": {"can_id": 0x0258, "type": "bit", "byte": 3, "bit": 0},
+    "CMU2_CELL_OPENWIRE": {"can_id": 0x0258, "type": "bit", "byte": 3, "bit": 1},
+    "CMU3_CELL_OPENWIRE": {"can_id": 0x0258, "type": "bit", "byte": 3, "bit": 2},
+    "CMU4_CELL_OPENWIRE": {"can_id": 0x0258, "type": "bit", "byte": 3, "bit": 3},
+    "CMU5_CELL_OPENWIRE": {"can_id": 0x0258, "type": "bit", "byte": 3, "bit": 4},
+    "CMU6_CELL_OPENWIRE": {"can_id": 0x0258, "type": "bit", "byte": 3, "bit": 5},
+    "CMU7_CELL_OPENWIRE": {"can_id": 0x0258, "type": "bit", "byte": 3, "bit": 6},
+    "CMU8_CELL_OPENWIRE": {"can_id": 0x0258, "type": "bit", "byte": 3, "bit": 7},
+
+    # Byte 4 – External NTC faults
+    "CMU1_EXT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 4, "bit": 0},
+    "CMU2_EXT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 4, "bit": 1},
+    "CMU3_EXT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 4, "bit": 2},
+    "CMU4_EXT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 4, "bit": 3},
+    "CMU5_EXT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 4, "bit": 4},
+    "CMU6_EXT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 4, "bit": 5},
+    "CMU7_EXT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 4, "bit": 6},
+    "CMU8_EXT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 4, "bit": 7},
+
+    # Byte 5 – Internal NTC faults
+    "CMU1_INT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 5, "bit": 0},
+    "CMU2_INT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 5, "bit": 1},
+    "CMU3_INT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 5, "bit": 2},
+    "CMU4_INT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 5, "bit": 3},
+    "CMU5_INT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 5, "bit": 4},
+    "CMU6_INT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 5, "bit": 5},
+    "CMU7_INT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 5, "bit": 6},
+    "CMU8_INT_NTC_FAULT": {"can_id": 0x0258, "type": "bit", "byte": 5, "bit": 7},
+
+    # --------------------------------------------------
+    # BO_601  (0x0259)  Critical_Error
+    # --------------------------------------------------
+    "StartupSanityFail": {"can_id": 0x0259, "type": "bit", "byte": 0, "bit": 5},
+    "THERMAL_RUNAWAY":   {"can_id": 0x0259, "type": "bit", "byte": 0, "bit": 6},
+    "SCD_ERROR":         {"can_id": 0x0259, "type": "bit", "byte": 0, "bit": 7},
+
+    # --------------------------------------------------
+    # BO_608  (0x0260)  AB_Error_Codes_1
+    # --------------------------------------------------
+
+    # Byte 0
     "EEPROM_SHADOW_WRITE_FAIL": {"can_id": 0x0260, "type": "bit", "byte": 0, "bit": 0},
     "EEPROM_META_WRITE_FAIL":   {"can_id": 0x0260, "type": "bit", "byte": 0, "bit": 1},
     "EEPROM_SHADOW_READ_FAIL":  {"can_id": 0x0260, "type": "bit", "byte": 0, "bit": 2},
@@ -63,13 +114,15 @@ ERROR_SIGNALS = {
     "HardFaultPresent":         {"can_id": 0x0260, "type": "bit", "byte": 0, "bit": 6},
     "Config_Update_warning":    {"can_id": 0x0260, "type": "bit", "byte": 0, "bit": 7},
 
+    # Byte 1-2 history groups
     "History_ActiveErrorGroup1": {"can_id": 0x0260, "type": "byte", "byte": 1},
     "History_ActiveErrorGroup2": {"can_id": 0x0260, "type": "byte", "byte": 2},
-    "SD_Power_off_Pending":      {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 0},
-    "Isolation_warning":         {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 1},
-    "Isolation_Failure":         {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 2},
-}
 
+    # Byte 3
+    "SD_Power_off_Pending": {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 0},
+    "Isolation_warning":    {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 1},
+    "Isolation_Failure":    {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 2},
+}
 INTERESTING_CAN_IDS = set(v["can_id"] for v in ERROR_SIGNALS.values())
 
 # Additional CAN frames for UV diagnostic context
@@ -77,42 +130,7 @@ DG_VOLTAGE_CAN_ID = 0x012C  # DG_voltageData
 AA_BATT_PARAM_2_CAN_ID = 0x0109  # AA_Batt_Param_2
 
 # Display order for table (matches your sheet first, then the rest)
-DISPLAY_ORDER = [
-    "SCD_ERROR",
-    "EEPROM_SHADOW_WRITE_FAIL",
-    "EEPROM_META_WRITE_FAIL",
-    "EEPROM_SHADOW_READ_FAIL",
-    "EEPROM_META_READ_FAIL",
-    "CCM_FAIL",
-    "CMU_FAIL",
-    "HardFaultPresent",
-    "Isolation_Failure",
-    "Isolation_warning",
-    "History_ActiveErrorGroup1",
-    "History_ActiveErrorGroup2",
-    "OCC_ERROR",
-    "HIGH_IMBALANCE_ERROR",
-    "PCB_TEMP_ERROR",
-    "EXT_TEMP_ERROR",
-    "EFUSE_DISCHG_ERROR",
-    "EFUSE_CHG_ERROR",
-    "UV_ERROR",
-    "OV_ERROR",
-    "OCD_ERROR",
-    # remaining:
-    "FLASH_WRITE_FAIL",
-    "EEPROM_WRITE_FAIL",
-    "EEPROM_READ_FAIL",
-    "PERMANENT_FAIL",
-    "PRECHARGE_FAIL",
-    "EEPROM_CORRUPTED",
-    "EEPROM_COMM_FAIL",
-    "THERMAL_RUNAWAY",
-    "StartupSanityFail",
-    "Config_Update_warning",
-    "SD_Power_off_Pending",
-]
-
+DISPLAY_ORDER = list(ERROR_SIGNALS.keys())
 # -----------------------------------------------------
 # Helpers
 # -----------------------------------------------------
