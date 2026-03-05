@@ -1,47 +1,3 @@
-#!/usr/bin/env python3
-"""
-FINAL VERSION – NEXT FRAME LOGIC (Vmax evaluated using prev5+next5 window around DROP frame)
-+ Transition-only Plot (frame-by-frame) with X-axis tick labels = SoC (%)
-
-Rules:
-When FFC = 1 → 0 (detected on a 0x0109 frame = DROP frame):
-    Use NEXT 0x0109 frame values for:
-        - SoC_At_Transition
-        - Vmax_At_Transition_mV (latest known at that NEXT 0x0109)
-        - Timestamp
-        - Judgment (PASS/FAIL)
-
-VALID transition if:
-    SoC_next ≤ 99.45 OR (ANY Vmax in window < 3300)
-
-INVALID transition if:
-    SoC_next > 99.45 AND (ALL Vmax in window ≥ 3300)
-
-Vmax window definition:
-    Around the 0x0109 DROP frame (FFC 1->0):
-        - Previous 5 Vmax samples (0x012C) seen before the drop-frame
-        - Next 5 Vmax samples (0x012C) seen after the drop-frame
-    If ANY of these 10 values is < 3300 mV, the Vmax condition is satisfied.
-
-Plot requirement:
-- Frame-by-frame plot (equal spacing in time/order)
-- X-axis displays SoC (%) values as tick labels (99.84, 99.83, ...)
-- If transition found: show only a window of frames around the decision (NEXT 0x0109)
-- If no transition: still plot something useful (last N frames)
-- IMPORTANT: Do NOT invert x-axis (prevents SoC appearing reversed)
-
-0x0109:
-    Byte0 = SoC LSB
-    Byte1 = SoC MSB
-    Byte5 = FFC (0 or 1)
-    SF SoC = 0.01
-
-0x012C:
-    Byte0 = Vmax LSB
-    Byte1 = Vmax MSB
-    SF Vmax = 0.1 mV
-"""
-
 import sys
 import os
 import json
@@ -121,7 +77,7 @@ def process_trc(trc_path, progress_cb=None):
         soc_next = pending_next_0109_snapshot["soc"]
         vmax_next = pending_next_0109_snapshot["vmax_now"]
 
-        soc_cond = soc_next <= 99.45
+        soc_cond = soc_next <= 99.51
         vmax_cond = any(v < 3300 for v in w)
 
         if soc_cond or vmax_cond:
