@@ -25,8 +25,8 @@ THERM_CAN_MAP = {
     2: (0x0140, list(range(8)))    # IntTherm_9 .. IntTherm_16
 }
 
-IMBALANCE_WARNING = 5.0   # °C
-IMBALANCE_FAIL = 10.0     # °C
+IMBALANCE_WARNING = 10.0   # °C
+IMBALANCE_FAIL = 15.0     # °C
 MAX_TIME_GAP_MS = 2000    # 2 seconds
 
 OUTPUT_ENCODING = "cp1252"  # for JSON files (Windows-friendly)
@@ -61,12 +61,12 @@ pattern = re.compile(
     r"(\d{2}:\d{2}:\d{2})\.(\d{3,4})(?:\.\d+)?\s+\w+\s+"
     r"([0-9A-Fa-f]+)\s+(\d+)\s+(.*)"
 )
-
 timestamps = []
 temps_list = []
 full_ts_list = []
+bms_state_list = []
 raw_first_10s = []
-
+current_temps = [None] * 16
 first_ts = None
 
 # -----------------------------------------------------
@@ -79,6 +79,7 @@ first_ts = None
 reported_int_max = None
 reported_int_min = None
 reported_int_delta = None
+bms_state = 0
 
 # -----------------------------------------------------
 # PARSE TRC
@@ -114,9 +115,16 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         # CAN ID 0x014E - Internal temp Delta / Min / Max
         # -----------------------------------------------------
         if can_id == 0x014E and dlc >= 6:
-            reported_int_max = s8(data[3])   # Int_Temp_Max
-            reported_int_min = s8(data[4])   # Int_Temp_Min
-            reported_int_delta = s8(data[5]) # Int_Temp_Delta
+            temp_max = s8(data[3])
+            temp_min = s8(data[4])
+            temp_delta = s8(data[5])
+
+            if reported_int_delta is None or temp_delta > reported_int_delta:
+                reported_int_delta = temp_delta
+                reported_int_max = temp_max
+                reported_int_min = temp_min
+        if can_id == 0x109 and dlc >= 5:
+            bms_state = data[4]
 
         # -----------------------------------------------------
         # Temperature CAN frames (internal thermistors)
@@ -127,7 +135,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
 
                 found = True
                 # 16 internal thermistors total
-                temp_arr = [None] * 16
+                temp_arr = current_temps
 
                 base = (group_id - 1) * 8  # 0 for group 1, 8 for group 2
 
@@ -142,8 +150,9 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
             continue
 
         timestamps.append(ts_ms)
-        temps_list.append(temp_arr)
+        temps_list.append(temp_arr.copy())
         full_ts_list.append(ts_string)
+        bms_state_list.append(bms_state)
 
         if ts_ms - first_ts <= 10000:
             raw_first_10s.append(temp_arr)
@@ -178,7 +187,8 @@ active_ntc_names = [f"IntTherm_{idx+1}" for idx in active_ntc]
 df = pd.DataFrame({
     "ts": timestamps,
     "temps": temps_list,
-    "full_ts": full_ts_list
+    "full_ts": full_ts_list,
+    "bms_state": bms_state_list
 }).sort_values("ts").reset_index(drop=True)
 
 # -----------------------------------------------------
@@ -204,6 +214,7 @@ for i in range(1, len(df)):
         continue
 
     arr = curr.temps
+    state = curr.bms_state
     temps_valid = True
     vals_with_idx = []
 
@@ -213,13 +224,15 @@ for i in range(1, len(df)):
         if val is None:
             continue
 
+        if val == 0 and state != 0:
+            continue
+
         if val == 0:
             zero_streak[ntc_idx] += 1
             if zero_streak[ntc_idx] < 3:
                 temps_valid = False
         else:
             zero_streak[ntc_idx] = 0
-
         vals_with_idx.append((ntc_idx, val))
 
     if not temps_valid or not vals_with_idx:
@@ -344,12 +357,17 @@ times = [ts/1000.0 for ts in df["ts"]]
 ntc_series = {ntc: [] for ntc in active_ntc}
 plot_zero_streak = {ntc: 0 for ntc in active_ntc}
 
-for arr in df["temps"]:
+for _, row in df.iterrows():
+    arr = row["temps"]
+    state = row["bms_state"]
     for ntc_idx in active_ntc:
         val = arr[ntc_idx]
 
         if not isinstance(val, int):
             plot_value = None
+        elif val == 0 and state != 0:
+            plot_value = None
+
         elif val == 0:
             plot_zero_streak[ntc_idx] += 1
             plot_value = 0 if plot_zero_streak[ntc_idx] >= 3 else None
