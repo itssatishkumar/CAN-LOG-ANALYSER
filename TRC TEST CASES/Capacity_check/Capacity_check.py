@@ -309,6 +309,7 @@ def parse_trc(fp, progress_cb=None):
     odo_list = []
     ntc_list = []
     uv_list = []
+    voltage_list = []
 
     with open(fp, "r", encoding="utf-8", errors="ignore") as f:
         for idx, line in enumerate(f, 1):
@@ -345,7 +346,14 @@ def parse_trc(fp, progress_cb=None):
                     hi = int(d[1], 16)
                     raw = lo | (hi << 8)
                     soc = raw * 0.01
-                    soc_list.append((ts, soc))
+                    soc_list.append((ts, soc)) 
+                    
+                if len(d) >= 8:
+                    v_lo = int(d[6], 16)
+                    v_hi = int(d[7], 16)
+                    raw_v = v_lo | (v_hi << 8)
+                    voltage = raw_v * 0.1
+                    voltage_list.append((ts, voltage))
 
             # TEMP (NTC) (0x14E) : (tmax, tmin) bytes
             # NOTE: We keep this logic for Tavg exactly as you already compute it.
@@ -387,7 +395,7 @@ def parse_trc(fp, progress_cb=None):
                     uv = (raw16 >> 6) & 1
                     uv_list.append((ts, uv))
 
-    return soc_list, current_list, odo_list, ntc_list, uv_list
+    return soc_list, current_list, odo_list, ntc_list, uv_list, voltage_list
 
 
 # =========================================================
@@ -521,6 +529,45 @@ def integrate_window(current_list, start_ts, end_ts):
 
     return As / 3600.0
 
+# =========================================================
+#  ENERGY INTEGRATION (V * I * dt)
+# =========================================================
+def integrate_energy(current_list, voltage_list):
+
+    if not current_list or not voltage_list:
+        return 0.0
+
+    current_list = sorted(current_list, key=lambda x: x[0])
+    voltage_list = sorted(voltage_list, key=lambda x: x[0])
+
+    total_energy_j = 0.0
+    v_index = 0
+    last_voltage = None
+
+    for i in range(1, len(current_list)):
+
+        t_prev, _ = current_list[i - 1]
+        t_now, current = current_list[i]
+
+        dt = (t_now - t_prev).total_seconds()
+        if dt <= 0 or dt > 0.5:
+            continue
+        # move voltage pointer forward
+        while v_index < len(voltage_list) and voltage_list[v_index][0] <= t_now:
+            last_voltage = voltage_list[v_index][1]
+            v_index += 1
+
+        if last_voltage is None:
+            continue
+
+        # Energy = V * I * dt (Joules)
+        energy_step = last_voltage * current * dt
+        total_energy_j += energy_step
+
+    # convert Joules to Wh
+    total_energy_wh = total_energy_j / 3600.0
+
+    return total_energy_wh
 
 def summarize_current(current_list):
 
@@ -887,6 +934,7 @@ def draw_table_png(
     cap_after_low_soc=None,
     uv_detected=False,
     low_soc_found=False,
+    energy_wh=None,
 ):
 
     cols = ["SoC Window", "Odo", "Cap Exchange", "Temp Avg", "Temp Signal"]
@@ -1003,6 +1051,17 @@ def draw_table_png(
         ha="center",
         va="center",
     )
+    # ---- ADD ENERGY DISPLAY ----
+    if energy_wh is not None:
+        ax.text(
+        0.8,  # right side of table
+        y + row_h / 2,
+        f"Energy Used = {abs(energy_wh):.0f} Wh",
+        ha="center",
+        va="center",
+        fontsize=10,
+        fontweight="bold",
+    )
 
     x = col_w[0] + col_w[1] + col_w[2]
     for w in col_w[3:]:
@@ -1060,7 +1119,8 @@ def main():
     therm_cb = progress_by_bytes(trc, start=60.0, end=85.0, step=PROGRESS_STEP)
     charge_cb = progress_by_bytes(trc, start=85.0, end=95.0, step=PROGRESS_STEP)
 
-    soc_list, current_list, odo_list, ntc_list, uv_list = parse_trc(trc, progress_cb=parse_cb)
+    soc_list, current_list, odo_list, ntc_list, uv_list, voltage_list = parse_trc(trc, progress_cb=parse_cb)
+    total_energy_wh = integrate_energy(current_list, voltage_list)
 
     # NEW: parse per-sensor therm signals (for min/max + signal name in table only)
     therm_samples = parse_thermistor_frames(trc, progress_cb=therm_cb, total_lines=None)
@@ -1104,6 +1164,7 @@ def main():
         cap_after_low_soc=cap_after_low_soc,
         uv_detected=uv_detected,
         low_soc_found=low_soc_found,
+        energy_wh=total_energy_wh,
     )
     print("PROGRESS 100.0", flush=True)
 
