@@ -185,12 +185,26 @@ def parse_thermistor_frames(fp, progress_cb=None, total_lines=None):
 
             group_key, byte_idxs = can_to_group[can_id]
 
-            # group -> base index in your flattened 0..67 indexing
+            # group -> base index mapping
             if group_key == 1:
                 base = 0
-            elif 2 <= group_key <= 9:
-                base = 6 + (group_key - 2) * 8
-            else:  # group 10
+            elif group_key == 2:
+                 base = 6
+            elif group_key == 3:
+                base = 14
+            elif group_key == 4:
+                base = 22
+            elif group_key == 5:
+                base = 30
+            elif group_key == 6:
+                base = 38
+            elif group_key == 7:
+                base = 46
+            elif group_key == 8:
+                base = 54
+            elif group_key == 9:
+                base = 62
+            else:  # group 10 (Master NTC)
                 base = 64
 
             temps = {}
@@ -223,7 +237,7 @@ def detect_active_ntc_from_therms(therm_samples, seconds=10):
         if ts > t_end:
             break
         for idx, v in temps.items():
-            if isinstance(v, (int, float)):
+            if isinstance(v, (int, float)) and v != 0:
                 active.add(idx)
 
 
@@ -252,10 +266,8 @@ def window_minmax_from_therms(therm_samples, start_ts, end_ts, ntc_names, active
         for idx, v in temps.items():
             if active is not None and idx not in active:
                 continue
-            if v is None:
+            if v is None or v == 0:
                 continue
-
-
 
             # Track max with ties only if they occur at the same timestamp
             if max_v is None or v > max_v:
@@ -1051,16 +1063,26 @@ def draw_table_png(
         ha="center",
         va="center",
     )
-    # ---- ADD ENERGY DISPLAY ----
+    # ---- ENERGY CELL (rightmost column) ----
     if energy_wh is not None:
-        ax.text(
-        0.8,  # right side of table
+        energy_text = f"Energy Used = {abs(energy_wh):.0f} Wh"
+    else:
+        energy_text = ""
+
+    energy_x = sum(col_w[:-1])  # start of last column
+    energy_w = col_w[-1]
+
+    ax.add_patch(Rectangle((energy_x, y), energy_w, row_h, fc="white", ec="black"))
+
+    ax.text(
+        energy_x + energy_w / 2,
         y + row_h / 2,
-        f"Energy Used = {abs(energy_wh):.0f} Wh",
+        energy_text,
         ha="center",
         va="center",
         fontsize=10,
         fontweight="bold",
+        color="red",
     )
 
     x = col_w[0] + col_w[1] + col_w[2]
