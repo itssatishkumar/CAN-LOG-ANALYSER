@@ -1,133 +1,307 @@
 import re
 import struct
 import sys
-import os
-import json
 import tkinter as tk
 from tkinter import filedialog
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+import json
+import os
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(line_buffering=True)
 BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.append(str(BASE_DIR))
+from trc_utils import fast_datetime_from_str, progress_by_bytes
 
-from trc_utils import fast_datetime_from_str
-
-PROGRESS_STEP = 0.5
-MIN_SOC_STEP = 0.01
-SOC_LOCK = 99.99
-LOG_GAP_THRESHOLD_SEC = 30.0
-INACTIVE_GAP_SEC = 5.0
+PROGRESS_STEP = 0.5  # percent granularity for live progress
 
 
-def get_charge_session_bounds(ff18_list, latch_list, trc_end_ts=None):
-    if not ff18_list:
-        return None
+# =========================================================
+#  THERM CAN MAP (per-sensor temps)
+#  NOTE: Tavg remains from 0x014E as in your original logic.
+# =========================================================
+THERM_CAN_MAP = {
+    1:  (0x0112, [0, 1, 2, 3, 4, 5]),              # Only 6 external NTCs
+    2:  (0x0130, list(range(8))),
+    3:  (0x0131, list(range(8))),
+    4:  (0x0132, list(range(8))),
+    5:  (0x0133, list(range(8))),
+    6:  (0x0134, list(range(8))),
+    7:  (0x0135, list(range(8))),
+    8:  (0x0136, list(range(8))),
+    9:  (0x0137, [0, 1]),                          # Only 2 external NTCs
+    10: (0x014F, [0, 1, 2, 3])                     # 4 Master Pack NTCs
+}
 
-    start_ts = min(ff18_list)
 
-    for ts, v in latch_list:
-        if ts >= start_ts and v == 1:
-            return (start_ts, ts)
-
-    last_ff18 = max(ff18_list)
-
-    if len(ff18_list) == 1 and trc_end_ts and trc_end_ts > last_ff18:
-        return (start_ts, trc_end_ts)
-
-    return (start_ts, last_ff18)
-
-
-def build_charge_intervals(ff18_list, session_start, session_end, inactive_gap=INACTIVE_GAP_SEC):
-    if session_start is None or session_end is None or session_end <= session_start:
-        return []
-
-    ff18 = sorted(ts for ts in ff18_list if session_start <= ts <= session_end)
-    intervals = []
-
-    cur = session_start
-    active_until = None
-
-    for ts in ff18:
-        if active_until is None:
-            active_until = ts + timedelta(seconds=inactive_gap)
-            cur = ts
-            continue
-
-        if ts <= active_until:
-            active_until = ts + timedelta(seconds=inactive_gap)
+def build_ntc_names(total_sensors=68):
+    names = []
+    for idx in range(total_sensors):
+        if idx < 64:
+            names.append(f"ExtTherm_{idx+1}")
         else:
-            intervals.append(("ACTIVE", cur, active_until))
-            intervals.append(("INACTIVE", active_until, ts))
-            active_until = ts + timedelta(seconds=inactive_gap)
-            cur = ts
-
-    if active_until:
-        end_active = min(active_until, session_end)
-        intervals.append(("ACTIVE", cur, end_active))
-        if end_active < session_end:
-            intervals.append(("INACTIVE", end_active, session_end))
-    else:
-        intervals.append(("INACTIVE", session_start, session_end))
-
-    intervals.sort(key=lambda x: x[1])
-    return intervals
+            names.append(f"Master_NTC_{idx-63}")
+    return names
 
 
-def is_active_charging(ts, intervals):
-    for state, s, e in intervals:
-        if state == "ACTIVE" and s <= ts < e:
-            return True
-    for state, s, e in intervals:
-        if state == "INACTIVE" and s <= ts < e:
-            return False
-    return False
+def format_sensor_names(sensor_str: str):
+    """
+    Collapse repeated ExtTherm_ prefixes to make lists shorter.
+    Example: 'ExtTherm_1, ExtTherm_2' -> 'ExtTherm_1, 2'
+    """
+    if not sensor_str:
+        return sensor_str
+
+    parts = [p.strip() for p in sensor_str.split(",") if p.strip()]
+    out = []
+    ext_seen = False
+    prefix = "ExtTherm_"
+
+    for p in parts:
+        if p.startswith(prefix):
+            num = p[len(prefix):]
+            if num.isdigit():
+                if not ext_seen:
+                    out.append(p)
+                    ext_seen = True
+                else:
+                    out.append(num)
+                continue
+        out.append(p)
+
+    return ", ".join(out)
 
 
-def _intervals_to_active_sessions(intervals):
-    return [(s, e) for state, s, e in intervals if state == "ACTIVE" and e > s]
-def progress_by_steps(start, end, step=0.5):
-    last = start
-    span = end - start
+def make_can_regex(can_hex_4: str):
+    return re.compile(
+        rf"\s*\d+\)\s+"
+        rf"(\d{{2}}-\d{{2}}-\d{{4}}\s+\d{{2}}:\d{{2}}:\d{{2}}\.\d+)\s+(Rx|Tx)\s+{can_hex_4}\s+8\s+(.+)"
+    )
 
-    def emit(frac):
-        nonlocal last
-        frac = max(0.0, min(1.0, frac))
-        pct = start + span * frac
-        if pct - last >= step or pct >= end:
-            last = pct
+
+def make_progress_cb(total: int, start: float = 0.0, end: float = 100.0, step: float = PROGRESS_STEP):
+    last = {"pct": -1.0}
+    span = max(0.0, end - start)
+    def emit(idx: int):
+        if not total:
+            return
+        pct = start + (idx / total) * span
+        pct = min(end, pct)
+        if pct - last["pct"] >= step or pct >= end:
+            last["pct"] = pct
             print(f"PROGRESS {pct:.1f}", flush=True)
-
     return emit
 
 
+# =========================================================
+#  CAN ID REGEX (original)
+# =========================================================
 RE_110 = re.compile(
-    r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+0110\s+8\s+(.+)"
-)
-RE_0109 = re.compile(
-    r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+0109\s+8\s+(.+)"
-)
-RE_014E = re.compile(
-    r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+014E\s+\d+\s+(.+)"
-)
-RE_18FF = re.compile(
-    r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+).*?\b18FF50E5\b",
-    re.IGNORECASE,
+    r"\s*\d+\)\s+"
+    r"(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+0110\s+8\s+(.+)"
 )
 
-RE_TS_ONLY = re.compile(
-    r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)"
+RE_0109 = re.compile(
+    r"\s*\d+\)\s+"
+    r"(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+0109\s+8\s+(.+)"
 )
-RE_012C = re.compile(
-    r"\s*\d+\)\s+(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+012C\s+8\s+(.+)"
+
+RE_014E = re.compile(
+    r"\s*\d+\)\s+"
+    r"(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+014E\s+\d+\s+(.+)"
 )
+
+RE_0402 = re.compile(
+    r"\s*\d+\)\s+"
+    r"(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+0402\s+8\s+(.+)"
+)
+
+RE_0258 = re.compile(
+    r"\s*\d+\)\s+"
+    r"(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+0258\s+8\s+(.+)"
+)
+
+RE_0602 = re.compile(
+    r"\s*\d+\)\s+"
+    r"(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+(Rx|Tx)\s+0602\s+\d+\s+(.+)"
+)
+
 
 def parse_ts(t):
     return fast_datetime_from_str(t)
+
+
+# =========================================================
+#  THERM FRAME REGEX + PARSER (per-sensor temps)
+# =========================================================
+THERM_RE = {can_id: make_can_regex(f"{can_id:04X}") for (_, (can_id, _)) in THERM_CAN_MAP.items()}
+
+
+def decode_temp_byte(b: int) -> float:
+    """
+    Decode temperature byte as SIGNED int8.
+    Example:
+      FC -> -4
+      F8 -> -8
+    """
+    return float(struct.unpack("b", bytes([b]))[0])
+
+def parse_thermistor_frames(fp, progress_cb=None, total_lines=None):
+    """
+    Returns list of (ts, temps_dict)
+      temps_dict: {sensor_index: tempC}
+    Indices:
+      0..63  -> ExtTherm_1..64
+      64..67 -> Master_NTC_1..4
+    """
+    can_to_group = {can_id: (g, byte_idxs) for g, (can_id, byte_idxs) in THERM_CAN_MAP.items()}
+
+    out = []
+    with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+        for idx, line in enumerate(f, 1):
+            if progress_cb:
+                progress_cb(len(line))
+            m = None
+            can_id = None
+            for cid, rx in THERM_RE.items():
+                mm = rx.match(line)
+                if mm:
+                    m = mm
+                    can_id = cid
+                    break
+
+            if not m:
+                continue
+
+            ts = parse_ts(m.group(1))
+            if not ts:
+                continue
+
+            d = m.group(3).split()
+            if len(d) < 8:
+                continue
+            payload = [int(x, 16) for x in d[:8]]
+
+            group_key, byte_idxs = can_to_group[can_id]
+
+            # group -> base index mapping
+            if group_key == 1:
+                base = 0
+            elif group_key == 2:
+                 base = 6
+            elif group_key == 3:
+                base = 14
+            elif group_key == 4:
+                base = 22
+            elif group_key == 5:
+                base = 30
+            elif group_key == 6:
+                base = 38
+            elif group_key == 7:
+                base = 46
+            elif group_key == 8:
+                base = 54
+            elif group_key == 9:
+                base = 62
+            else:  # group 10 (Master NTC)
+                base = 64
+
+            temps = {}
+            for j, bidx in enumerate(byte_idxs):
+                idx = base + j
+                if idx >= 68:
+                    continue
+                temps[idx] = decode_temp_byte(payload[bidx])
+
+            out.append((ts, temps))
+
+    return sorted(out, key=lambda x: x[0])
+
+
+def detect_active_ntc_from_therms(therm_samples, seconds=10):
+    """
+    Optional: detect which sensors are active in the first N seconds.
+    If none detected, we fall back to using all sensors seen in the window.
+    """
+    if not therm_samples:
+        return []
+
+    t0 = therm_samples[0][0]
+    t_end = t0 + timedelta(seconds=seconds)
+
+    active = set()
+    for ts, temps in therm_samples:
+        if ts < t0:
+            continue
+        if ts > t_end:
+            break
+        for idx, v in temps.items():
+            if isinstance(v, (int, float)) and v != 0:
+                active.add(idx)
+
+
+    return sorted(active)
+
+
+def window_minmax_from_therms(therm_samples, start_ts, end_ts, ntc_names, active_ntc=None):
+    """
+    Returns (tmax, tmax_name, tmin, tmin_name) based on per-sensor signals.
+    Does NOT affect Tavg (Tavg continues to use 0x014E logic).
+    """
+    active = set(active_ntc) if active_ntc is not None else None
+    max_v = None
+    max_ts = None
+    max_idxs = set()
+    min_v = None
+    min_ts = None
+    min_idxs = set()
+
+    for ts, temps in therm_samples:
+        if ts < start_ts:
+            continue
+        if ts > end_ts:
+            break
+
+        for idx, v in temps.items():
+            if active is not None and idx not in active:
+                continue
+            if v is None or v == 0:
+                continue
+
+            # Track max with ties only if they occur at the same timestamp
+            if max_v is None or v > max_v:
+                max_v = v
+                max_ts = ts
+                max_idxs = {idx}
+            elif v == max_v and ts == max_ts:
+                max_idxs.add(idx)
+
+            # Track min with ties only if they occur at the same timestamp
+            if min_v is None or v < min_v:
+                min_v = v
+                min_ts = ts
+                min_idxs = {idx}
+            elif v == min_v and ts == min_ts:
+                min_idxs.add(idx)
+
+    if max_v is None or min_v is None:
+        return None, None, None, None
+
+    try:
+        raw_max = ", ".join(ntc_names[i] for i in sorted(max_idxs))
+        raw_min = ", ".join(ntc_names[i] for i in sorted(min_idxs))
+        max_names = format_sensor_names(raw_max)
+        min_names = format_sensor_names(raw_min)
+    except (IndexError, KeyError):
+        return None, None, None, None
+
+    return max_v, max_names, min_v, min_names
+
+
+# =========================================================
+#  SELECT TRC FILE GUI
+# =========================================================
 def select_trc_file():
     root = tk.Tk()
     root.withdraw()
@@ -137,110 +311,164 @@ def select_trc_file():
     )
 
 
-def get_trc_file():
-    if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):
-        return sys.argv[1]
+# =========================================================
+#  PARSE TRC FILE FOR ALL METRICS EXCEPT CHARGING
+# =========================================================
+def parse_trc(fp, progress_cb=None):
 
-    trc_env = os.environ.get("TRC_FILE")
-    if trc_env and os.path.isfile(trc_env):
-        return trc_env
-
-    trc = select_trc_file()
-    if trc and os.path.isfile(trc):
-        return trc
-
-    raise RuntimeError("No TRC file selected")
-
-def parse_trc(fp, progress_cb=None, total_lines=None):
     soc_list = []
-    latch_list = []
     current_list = []
-    temp_list = []
-    ff18_list = []
-    vmin_list = []
-    vmax_list = []
-    log_gaps = []
-
-    last_any_ts = None
+    odo_list = []
+    ntc_list = []
+    uv_list = []
+    voltage_list = []
 
     with open(fp, "r", encoding="utf-8", errors="ignore") as f:
-        for i, line in enumerate(f, 1):
-            if progress_cb and total_lines:
-                progress_cb(i / total_lines)
-            m_ts_any = RE_TS_ONLY.match(line)
-            if m_ts_any:
-                any_ts = parse_ts(m_ts_any.group(1))
-                if any_ts and last_any_ts:
-                    gap = (any_ts - last_any_ts).total_seconds()
-                    if gap > LOG_GAP_THRESHOLD_SEC:
-                        log_gaps.append((last_any_ts, any_ts))
-                if any_ts:
-                    last_any_ts = any_ts
+        for idx, line in enumerate(f, 1):
+            if progress_cb:
+                progress_cb(len(line))
 
+            # CURRENT (0x110)
             m = RE_110.match(line)
             if m:
                 ts = parse_ts(m.group(1))
                 d = m.group(3).split()
                 if ts and len(d) >= 8:
-                    raw = struct.unpack("<i", bytes(int(x, 16) for x in d[4:8]))[0]
-                    current_list.append((ts, raw * 1e-5))
+                    b4, b5, b6, b7 = [int(x, 16) for x in d[4:8]]
+                    raw = struct.unpack("<i", bytes([b4, b5, b6, b7]))[0]
+                    I = raw * 1e-5
+                    current_list.append((ts, I))
 
+            # SOC (0x109)  --- IGNORE if 5th byte == 0x00
             m = RE_0109.match(line)
             if m:
                 ts = parse_ts(m.group(1))
                 d = m.group(3).split()
-                if ts and len(d) >= 6:
-                    latch = int(d[5], 16)
-                    latch_list.append((ts, latch))
+                if not ts:
+                    continue
 
-                    # Only append SoC if 5th data byte (d[4]) is non-zero (valid SoC)
-                    if int(d[4], 16) != 0:
-                        soc = (int(d[0], 16) | (int(d[1], 16) << 8)) * 0.01
-                        soc_list.append((ts, soc))
+                # BMS state / validity byte is at index 4 (5th byte)
+                if len(d) >= 5:
+                    bms_state = int(d[4], 16)
+                    if bms_state == 0:
+                        continue
 
-                    if latch == 1:
-                        soc_list.append((ts, 100.0, "LATCH"))
+                if len(d) >= 2:
+                    lo = int(d[0], 16)
+                    hi = int(d[1], 16)
+                    raw = lo | (hi << 8)
+                    soc = raw * 0.01
+                    soc_list.append((ts, soc)) 
+                    
+                if len(d) >= 8:
+                    v_lo = int(d[6], 16)
+                    v_hi = int(d[7], 16)
+                    raw_v = v_lo | (v_hi << 8)
+                    voltage = raw_v * 0.1
+                    voltage_list.append((ts, voltage))
 
+            # TEMP (NTC) (0x14E) : (tmax, tmin) bytes
+            # NOTE: We keep this logic for Tavg exactly as you already compute it.
             m = RE_014E.match(line)
             if m:
                 ts = parse_ts(m.group(1))
                 d = m.group(3).split()
                 if ts and len(d) >= 2:
-                    tmax = struct.unpack("b", bytes([int(d[0], 16)]))[0]
-                    tmin = struct.unpack("b", bytes([int(d[1], 16)]))[0]
-                    temp_list.append((ts, tmax, tmin))
-            m = RE_18FF.match(line)
-            if m:
-                ts = parse_ts(m.group(1))
-                if ts:
-                    ff18_list.append(ts)
-            elif ("18FF50E5" in line) or ("18ff50e5" in line):
-                if any(tok.upper() == "18FF50E5" for tok in line.split()):
-                    m_ts = RE_TS_ONLY.match(line)
-                    if m_ts:
-                        ts = parse_ts(m_ts.group(1))
-                        if ts:
-                            ff18_list.append(ts)
+                    ntc_list.append((
+                        ts,
+                        (
+                            struct.unpack("b", bytes([int(d[0],16)]))[0],
+                            struct.unpack("b", bytes([int(d[1],16)]))[0],
+                        )
+                    ))
 
-            m = RE_012C.match(line)
+
+            # ODO (0x402)
+            m = RE_0402.match(line)
             if m:
                 ts = parse_ts(m.group(1))
                 d = m.group(3).split()
                 if ts and len(d) >= 4:
-                    vmin = (int(d[2], 16) | (int(d[3], 16) << 8)) * 0.1
-                    vmax = (int(d[0], 16) | (int(d[1], 16) << 8)) * 0.1
-                    vmin_list.append((ts, vmin))
-                    vmax_list.append((ts, vmax))
+                    raw = (
+                        int(d[0], 16)
+                        | (int(d[1], 16) << 8)
+                        | (int(d[2], 16) << 16)
+                        | (int(d[3], 16) << 24)
+                    )
+                    odo_list.append((ts, raw * 0.1))
 
-    return soc_list, latch_list, current_list, temp_list, ff18_list, vmin_list, vmax_list, log_gaps
+            # UV FLAG (0x258)
+            m = RE_0258.match(line)
+            if m:
+                ts = parse_ts(m.group(1))
+                d = m.group(3).split()
+                if ts and len(d) >= 2:
+                    raw16 = int(d[0], 16) | (int(d[1], 16) << 8)
+                    uv = (raw16 >> 6) & 1
+                    uv_list.append((ts, uv))
+
+    return soc_list, current_list, odo_list, ntc_list, uv_list, voltage_list
 
 
+# =========================================================
+#  DETECT CHARGING STATE FROM CAN ID 0x0602
+# =========================================================
+def detect_charge_events(fp, progress_cb=None):
+
+    events = []
+    with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+        for idx, line in enumerate(f, 1):
+            if progress_cb:
+                progress_cb(len(line))
+            m = RE_0602.match(line)
+            if not m:
+                continue
+
+            ts = parse_ts(m.group(1))
+            if not ts:
+                continue
+
+            d = m.group(3).split()
+            if len(d) < 8:
+                continue
+
+            last_byte = int(d[7], 16)
+            state = "CHARGING" if last_byte in (0x01, 0x03) else "DRIVING"
+            events.append((ts, state))
+
+    return sorted(events, key=lambda x: x[0])
+
+
+def build_charge_sessions(events, default_end=None):
+
+    sessions = []
+    state = "DRIVING"
+    session_start = None
+
+    for ts, new_state in events:
+        if new_state == state:
+            continue
+
+        if new_state == "CHARGING":
+            session_start = ts
+        else:
+            if session_start:
+                sessions.append((session_start, ts))
+                session_start = None
+        state = new_state
+
+    if state == "CHARGING" and session_start and default_end:
+        sessions.append((session_start, default_end))
+
+    return sessions
+
+
+# =========================================================
+#  LOOKUP HELPERS
+# =========================================================
 def lookup_before(ts, data):
     best = None
-    for item in data:
-        if len(item) == 3:
-            continue
-        t, v = item
+    for t, v in data:
         if t <= ts:
             best = (t, v)
         else:
@@ -248,875 +476,720 @@ def lookup_before(ts, data):
     return best
 
 
+def lookup_after(ts, data):
+    for t, v in data:
+        if t >= ts:
+            return (t, v)
+    return None
+
+
+# =========================================================
+#  FIXED: EXACT/STEP SoC TIMESTAMP SELECTION (0.01% resolution)
+# =========================================================
+def find_soc_ts(soc_list, target, start_ts, end_ts, reverse=False, tol=0.15):
+    if not soc_list:
+        return None
+
+    EPS = 1e-9
+    best_ts = None
+    best_soc = None
+
+    data = reversed(soc_list) if reverse else soc_list
+
+    # Pass 1: exact target match
+    for ts, soc in data:
+        if ts < start_ts or ts > end_ts:
+            continue
+        if abs(soc - target) <= EPS:
+            return ts
+
+    # Pass 2: nearest below target (max soc < target)
+    data = reversed(soc_list) if reverse else soc_list
+    for ts, soc in data:
+        if ts < start_ts or ts > end_ts:
+            continue
+        if soc < target - EPS:
+            if best_soc is None or soc > best_soc:
+                best_soc = soc
+                best_ts = ts
+
+    return best_ts
+
+
+# =========================================================
+#  CAPACITY INTEGRATION
+# =========================================================
 def integrate_window(current_list, start_ts, end_ts):
     DEFAULT_DT = 0.3
     As = 0.0
-    curr = sorted(current_list)
+    curr = sorted(current_list, key=lambda x: x[0])
 
     for i in range(1, len(curr)):
         t0, I = curr[i - 1]
         t1, _ = curr[i]
+
         if t1 <= start_ts:
             continue
         if t0 >= end_ts:
             break
 
-        seg_start = max(t0, start_ts)
-        seg_end = min(t1, end_ts)
-        if seg_end <= seg_start:
-            continue
+        dt = (t1 - t0).total_seconds()
+        if dt <= 0 or dt > 0.5:
+            dt = DEFAULT_DT
 
-        pair_dt = (t1 - t0).total_seconds()
-        overlap_dt = (seg_end - seg_start).total_seconds()
-        if overlap_dt <= 0:
-            continue
-
-        if pair_dt <= 0:
-            dt = 0.0
-        elif pair_dt > 0.5:
-            dt = min(DEFAULT_DT, overlap_dt)
-        else:
-            dt = overlap_dt
-
-        if dt > 0:
-            As += I * dt
+        As += I * dt
 
     return As / 3600.0
 
+# =========================================================
+#  ENERGY INTEGRATION (V * I * dt)
+# =========================================================
+def integrate_energy(current_list, voltage_list):
 
-def window_temp_avg(temp_list, start_ts, end_ts):
-    s = 0
-    c = 0
+    if not current_list or not voltage_list:
+        return 0.0
 
-    for ts, tmax, tmin in temp_list:
-        if not (start_ts <= ts <= end_ts):
+    current_list = sorted(current_list, key=lambda x: x[0])
+    voltage_list = sorted(voltage_list, key=lambda x: x[0])
+
+    total_energy_j = 0.0
+    v_index = 0
+    last_voltage = None
+
+    for i in range(1, len(current_list)):
+
+        t_prev, _ = current_list[i - 1]
+        t_now, current = current_list[i]
+
+        dt = (t_now - t_prev).total_seconds()
+        if dt <= 0 or dt > 0.5:
+            continue
+        # move voltage pointer forward
+        while v_index < len(voltage_list) and voltage_list[v_index][0] <= t_now:
+            last_voltage = voltage_list[v_index][1]
+            v_index += 1
+
+        if last_voltage is None:
             continue
 
-        vals = []
+        # Energy = V * I * dt (Joules)
+        energy_step = last_voltage * current * dt
+        total_energy_j += energy_step
 
-        if tmax != 0:
-            vals.append(tmax)
+    # convert Joules to Wh
+    total_energy_wh = total_energy_j / 3600.0
 
-        if tmin != 0:
-            vals.append(tmin)
+    return total_energy_wh
 
-        if not vals:
-            continue
+def summarize_current(current_list):
 
-        avg = sum(vals) / len(vals)
+    DEFAULT_DT = 0.3
+    pos_as = 0.0
+    neg_as = 0.0
+    valid = 0
+    default = 0
 
-        s += avg
-        c += 1
+    curr = sorted(current_list, key=lambda x: x[0])
+    for i in range(1, len(curr)):
+        t0, I = curr[i - 1]
+        t1, _ = curr[i]
+        dt = (t1 - t0).total_seconds()
 
-    return (s / c) if c else None
-
-
-def find_latch_ts(latch_list, start_ts, end_ts):
-    for ts, v in latch_list:
-        if start_ts <= ts <= end_ts and v == 1:
-            return ts
-    return None
-
-
-def find_first_soc_ts(soc_list, start_ts, end_ts):
-    for item in soc_list:
-        if len(item) == 3:
-            continue
-        ts, _ = item
-        if start_ts <= ts <= end_ts:
-            return ts
-    return None
-
-
-def find_first_100_ts(soc_list, start_ts, end_ts):
-    for item in soc_list:
-        if len(item) == 3:
-            continue
-        ts, soc = item
-        if start_ts <= ts <= end_ts and soc >= 100.0:
-            return ts
-    return None
-
-
-def find_last_soc_before_100(soc_list, start_ts, first_100_ts):
-    last = None
-    for item in soc_list:
-        if len(item) == 3:
-            continue
-        ts, _ = item
-        if ts < start_ts:
-            continue
-        if first_100_ts and ts >= first_100_ts:
-            break
-        last = ts
-    return last
-
-
-def _v_window_around_latch(latch_ts, vmin_list, vmax_list, pre=5, post=5):
-    if not latch_ts or not vmin_list or not vmax_list:
-        return None, None
-
-    n = min(len(vmin_list), len(vmax_list))
-    if n == 0:
-        return None, None
-
-    pairs = list(zip(vmin_list[:n], vmax_list[:n]))
-
-    latch_idx = None
-    for i in range(n):
-        if pairs[i][0][0] >= latch_ts:
-            latch_idx = i
-            break
-    if latch_idx is None:
-        def _time_diff_sec(i):
-            return abs((pairs[i][0][0] - latch_ts).total_seconds())
-
-        latch_idx = min(range(n), key=_time_diff_sec)
-
-    start = max(0, latch_idx - pre)
-    end = min(n - 1, latch_idx + post)
-
-    best_idx = start
-    best_vmax = pairs[start][1][1]
-
-    for i in range(start + 1, end + 1):
-        vmax_val = pairs[i][1][1]
-        if vmax_val > best_vmax:
-            best_vmax = vmax_val
-            best_idx = i
-
-    vmin_val = pairs[best_idx][0][1]
-    vmax_val = pairs[best_idx][1][1]
-
-    return int(vmin_val), int(vmax_val)
-
-
-def classify_latch(latch_ts, vmin_list, vmax_list):
-    if not latch_ts:
-        return "NA", None, None
-
-    vmin_val, vmax_val = _v_window_around_latch(latch_ts, vmin_list, vmax_list)
-
-    if vmin_val is None:
-        return "NA", None, vmax_val
-
-    if vmin_val >= 3379:
-        return "Primary", vmin_val, vmax_val
-
-    return "Secondary", vmin_val, vmax_val
-
-
-def last_active_v_pair(vmin_list, vmax_list, intervals, session_start_ts, session_end_ts):
-    if not vmin_list or not vmax_list or not intervals:
-        return None, None
-
-    n = min(len(vmin_list), len(vmax_list))
-    if n <= 0:
-        return None, None
-
-    last = None
-    for (tmin, vmin), (tmax, vmax) in zip(vmin_list[:n], vmax_list[:n]):
-        if tmin != tmax:
-            continue
-        ts = tmin
-        if not (session_start_ts <= ts <= session_end_ts):
-            continue
-
-        active = False
-        for state, s, e in intervals:
-            if state != "ACTIVE":
-                continue
-            if s <= ts <= e:
-                active = True
-                break
-        if not active:
-            continue
-
-        if last is None or ts > last[0]:
-            last = (ts, vmin, vmax)
-
-    if last is None:
-        return None, None
-
-    return int(last[1]), int(last[2])
-
-
-def decide_pass_fail(latch_ts, vmax_list, start_ts, end_ts, vmax_threshold=3535):
-    vmax_peak = None
-    first_over_ts = None
-
-    for ts, v in vmax_list:
-        if not (start_ts <= ts <= end_ts):
-            continue
-
-        if vmax_peak is None or v > vmax_peak:
-            vmax_peak = v
-
-        if v > vmax_threshold and first_over_ts is None:
-            first_over_ts = ts
-
-    if first_over_ts is None:
-        return "PASS"
-
-    if latch_ts and latch_ts >= first_over_ts:
-        return "PASS"
-
-    return "FAIL"
-
-
-def format_duration(td):
-    total = td.total_seconds()
-    if total < 0:
-        total = 0.0
-
-    h = int(total // 3600)
-    rem = total - (h * 3600)
-    m = int(rem // 60)
-    sec = rem - (m * 60)
-
-    if total < 60:
-        s_str = f"{sec:.1f}".rstrip("0").rstrip(".") + "s"
-    else:
-        s_str = f"{int(sec)}s"
-
-    return f"{h}hr,{m}min,{s_str}"
-
-
-def parse_duration_str(s):
-    try:
-        h_part, m_part, s_part = s.split(",")
-        h = int(h_part.replace("hr", ""))
-        m = int(m_part.replace("min", ""))
-        sec = float(s_part.replace("s", ""))
-        return timedelta(hours=h, minutes=m, seconds=sec)
-    except Exception:
-        return timedelta(0)
-
-
-def merge_tail_active_windows(rows, threshold_soc=90.0):
-    if not rows:
-        return rows
-
-    idx = len(rows) - 1
-    suffix_indices = []
-
-    while idx >= 0:
-        status, sv, ev, dur, ah, tavg = rows[idx]
-        if status == "ACTIVE" and sv >= threshold_soc:
-            suffix_indices.append(idx)
-            idx -= 1
+        if dt <= 0 or dt > 0.5:
+            dt = DEFAULT_DT
+            default += 1
         else:
-            break
-    if len(suffix_indices) <= 1:
-        return rows
+            valid += 1
 
-    start_idx = suffix_indices[-1]
-    end_idx = suffix_indices[0]
-    segment = rows[start_idx:end_idx + 1]
+        if I >= 0:
+            pos_as += I * dt
+        else:
+            neg_as += I * dt
 
-    merged_status = "ACTIVE"
-    merged_soc_start = segment[0][1]
-    merged_soc_end = segment[-1][2]
+    return {
+        "charge_ah": pos_as / 3600.0,
+        "discharge_ah": neg_as / 3600.0,
+        "exchange_ah": (pos_as + neg_as) / 3600.0,
+        "valid_dt_count": valid,
+        "default_dt_count": default,
+        "default_dt_value": DEFAULT_DT,
+    }
 
-    total_td = timedelta(0)
-    total_ah = 0.0
-    temps = []
 
-    for status, sv, ev, dur, ah, tavg in segment:
-        total_td += parse_duration_str(dur)
-        total_ah += ah
-        if tavg is not None:
-            temps.append(tavg)
+# =========================================================
+#  UV SOC SELECTION
+# =========================================================
+def get_uv_end_soc(soc_list, uv_ts):
 
-    merged_tavg = sum(temps) / len(temps) if temps else None
-    merged_row = (
-        merged_status,
-        merged_soc_start,
-        merged_soc_end,
-        format_duration(total_td),
-        total_ah,
-        merged_tavg,
-    )
-
-    return rows[:start_idx] + [merged_row] + rows[end_idx + 1:]
-
-def build_charge_windows(
-    soc_list,
-    current_list,
-    temp_list,
-    start_ts,
-    end_ts,
-    charge_sessions,
-    inactive_gap=INACTIVE_GAP_SEC,
-):
-    rows = []
-    soc_list = sorted(soc_list, key=lambda x: x[0])
-
-    cur = lookup_before(start_ts, soc_list)
-    if not cur:
-        return rows, None
-    ws_soc = cur[1]
-    ws_ts = start_ts
-
-    def is_active(ts):
-        for s, e in charge_sessions:
-            if s <= ts < e:
-                return True
-        return False
-
-    def active_end(ts):
-        for s, e in charge_sessions:
-            if s <= ts < e:
-                return e
+    if not soc_list:
         return None
 
-    while ws_ts < end_ts:
-        if is_active(ws_ts):
-            ae = active_end(ws_ts)
-            ae = min(ae, end_ts) if ae else end_ts
+    idx = None
+    for i, (t, v) in enumerate(soc_list):
+        if t >= uv_ts:
+            idx = i
+            break
 
-            target_soc = ws_soc + 10.0
-            next_ts = None
-            next_soc = None
+    if idx is None:
+        idx = len(soc_list) - 1
 
-            for item in soc_list:
-                if len(item) == 3:
-                    continue
-                ts, soc = item
-                if ts <= ws_ts:
-                    continue
-                if ts >= ae:
-                    break
-                if soc >= ws_soc:
-                    next_ts = ts
-                    next_soc = min(soc, target_soc)
-                    if soc >= target_soc:
-                        break
+    chosen_soc = soc_list[idx][1]
 
-            if next_ts and next_ts > ws_ts:
-                ah = integrate_window(current_list, ws_ts, next_ts)
-                tavg = window_temp_avg(temp_list, ws_ts, next_ts)
-                rows.append(
-                    (
-                        "ACTIVE",
-                        ws_soc,
-                        next_soc,
-                        format_duration(next_ts - ws_ts),
-                        ah,
-                        tavg,
-                    )
-                )
-                ws_ts = next_ts
-                ws_soc = next_soc
-            else:
-                soc_at_ae = lookup_before(ae, soc_list)
-                if soc_at_ae:
-                    ws_soc = soc_at_ae[1]
-                ws_ts = ae
+    if chosen_soc > 0:
+        return chosen_soc
 
+    streak = 0
+    j = idx
+    while j >= 0 and soc_list[j][1] == 0:
+        streak += 1
+        j -= 1
+
+    if streak >= 5:
+        return 0.0
+
+    while j >= 0:
+        if soc_list[j][1] > 0:
+            return soc_list[j][1]
+        j -= 1
+
+    return 0.0
+
+
+def window_temp_avg(temp_samples, start_ts, end_ts):
+    total = 0.0
+    count = 0
+    for ts, sval in temp_samples:
+        if ts < start_ts:
+            continue
+        if ts > end_ts:
+            break
+        total += sval
+        count += 1
+    if count == 0:
+        return None, 0
+    return total / count, count
+
+
+# =========================================================
+#  BUILD WINDOWS
+# =========================================================
+def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, therm_samples, fp):
+
+    soc_list = sorted(soc_list, key=lambda x: x[0])
+    odo_list = sorted(odo_list, key=lambda x: x[0])
+    ntc_list = sorted(ntc_list, key=lambda x: x[0])
+    current_list = sorted(current_list, key=lambda x: x[0])
+
+    if not soc_list:
+        return [], 0.0, None, False, False
+
+    # Keep original Tavg computation (from 0x014E tmax/tmin)
+    temp_samples = []
+    zero_streak = 0
+    streak_found = False
+    for ts, (tmax, tmin) in ntc_list:
+        if not streak_found:
+            if tmax == 0 or tmin == 0:
+                zero_streak += 1
+                if zero_streak >= 5:
+                    streak_found = True
+                continue
+            zero_streak = 0
+            temp_samples.append((ts, (tmax + tmin) / 2.0))
         else:
-            next_active_start = None
-            for s, e in charge_sessions:
-                if s > ws_ts:
-                    next_active_start = s
-                    break
+            temp_samples.append((ts, (tmax + tmin) / 2.0))
 
-            ie = next_active_start if next_active_start else end_ts
-            if ie <= ws_ts:
-                break
+    ntc_names = build_ntc_names(68)
 
-            display_start = ws_ts
-            if inactive_gap and inactive_gap > 0:
-                display_start = max(start_ts, ws_ts - timedelta(seconds=inactive_gap))
+    # Detect active NTCs once (optional filter). If empty -> we won't filter.
+    active_ntc = detect_active_ntc_from_therms(therm_samples, seconds=10)
+    if not active_ntc:
+        active_ntc = None  # fallback: consider any sensor present
 
-            end_soc = ws_soc
-            for item in soc_list:
-                if len(item) == 3:
-                    continue
-                ts, soc = item
-                if display_start < ts <= ie:
-                    end_soc = soc
+    # UV timestamp
+    uv_ts = None
+    for ts, flag in uv_list:
+        if flag == 1:
+            uv_ts = ts
+            break
 
-            ah = integrate_window(current_list, display_start, ie)
-            tavg = window_temp_avg(temp_list, display_start, ie)
+    uv_end_soc = None
+    if uv_ts and soc_list:
+        uv_end_soc = get_uv_end_soc(soc_list, uv_ts)
 
-            rows.append(
-                (
-                    "INACTIVE",
-                    ws_soc,
-                    end_soc,
-                    format_duration(ie - display_start),
-                    ah,
-                    tavg,
-                )
+    ts_all = [t for t, _ in soc_list]
+    t_start = ts_all[0]
+    t_end = ts_all[-1]
+
+    # Charging sessions
+    charge_events = detect_charge_events(fp)
+    charging_sessions = build_charge_sessions(charge_events, t_end)
+
+    session_blocks = []
+    prev_end = t_start
+    for st, en in charging_sessions:
+        if st > prev_end:
+            session_blocks.append(("normal", prev_end, st))
+        session_blocks.append(("charge", st, en))
+        prev_end = en
+
+    if prev_end < t_end:
+        session_blocks.append(("normal", prev_end, t_end))
+
+    session_blocks.sort(key=lambda x: x[1])
+
+    # Total range
+    total_range = 0.0
+    if odo_list:
+        total_range = max(0.0, odo_list[-1][1] - odo_list[0][1])
+
+    final_rows = []
+    odo_baseline = odo_list[0][1] if odo_list else None
+    soc_baseline = soc_list[0][1] if soc_list else None
+
+    for typ, block_start, block_end in session_blocks:
+
+        # -----------------------------
+        # CHARGE BLOCK (WITH Ah + Temp)
+        # -----------------------------
+        if typ == "charge":
+            charge_soc_start = lookup_before(block_start, soc_list)
+            charge_soc_end = lookup_before(block_end, soc_list)
+
+            # distance during charge (optional, usually ~0)
+            dist = 0.0
+            if odo_list:
+                odo_start = lookup_before(block_start, odo_list)
+                odo_end = lookup_before(block_end, odo_list)
+                if odo_start and odo_end:
+                    dist = max(0.0, odo_end[1] - odo_start[1])
+
+            cap_ah = integrate_window(current_list, block_start, block_end)
+
+            # Keep Tavg exactly as before:
+            tavg, _ = window_temp_avg(temp_samples, block_start, block_end)
+
+            # NEW: compute min/max + signal name from per-sensor therms
+            tmax_v, tmax_sig, tmin_v, tmin_sig = window_minmax_from_therms(
+                therm_samples, block_start, block_end, ntc_names, active_ntc=active_ntc
             )
 
-            ws_ts = ie
-            ws_soc = end_soc
+            if charge_soc_start and charge_soc_end:
+                final_rows.append(
+                    ("charge", charge_soc_start[1], charge_soc_end[1], dist, cap_ah, tavg,
+                     tmax_v, tmax_sig, tmin_v, tmin_sig)
+                )
 
-    return rows, ws_ts
+            # update baselines
+            charge_odo_end = lookup_before(block_end, odo_list)
+            if charge_odo_end:
+                odo_baseline = charge_odo_end[1]
+            if charge_soc_end:
+                soc_baseline = charge_soc_end[1]
+            continue
 
-def draw_charging_table(
+        # -----------------------------
+        # NORMAL (DRIVING) BLOCKS
+        # -----------------------------
+        if uv_ts and uv_ts <= block_start:
+            continue
+
+        if uv_ts and uv_ts < block_end:
+            block_end_ts = uv_ts
+            uv_in_this_block = True
+        else:
+            block_end_ts = block_end
+            uv_in_this_block = False
+
+        if soc_baseline is None:
+            sb = lookup_before(block_start, soc_list)
+            if sb:
+                soc_baseline = sb[1]
+
+        end_entry = lookup_before(block_end_ts, soc_list)
+        if soc_baseline is None or not end_entry:
+            continue
+
+        current_soc = soc_baseline
+        end_soc = end_entry[1]
+
+        if uv_in_this_block and uv_end_soc is not None:
+            end_soc = uv_end_soc
+
+        # 10% windows downwards
+        while current_soc - end_soc >= 10:
+            next_soc = current_soc - 10
+
+            window_start_ts = (
+                find_soc_ts(soc_list, current_soc, block_start, block_end_ts)
+                or block_start
+            )
+            window_end_ts = (
+                find_soc_ts(soc_list, next_soc, block_start, block_end_ts, reverse=True)
+                or block_end_ts
+            )
+
+            if odo_baseline is None:
+                ob = lookup_before(window_start_ts, odo_list)
+                if ob:
+                    odo_baseline = ob[1]
+
+            dist = 0.0
+            odo_end = lookup_before(window_end_ts, odo_list)
+            if odo_end and odo_baseline is not None:
+                dist = odo_end[1] - odo_baseline
+                if dist < 0:
+                    dist = 0.0
+                odo_baseline = odo_end[1]
+
+            # Keep Tavg exactly as before:
+            tavg, _ = window_temp_avg(temp_samples, window_start_ts, window_end_ts)
+
+            # NEW min/max + signal:
+            tmax_v, tmax_sig, tmin_v, tmin_sig = window_minmax_from_therms(
+                therm_samples, window_start_ts, window_end_ts, ntc_names, active_ntc=active_ntc
+            )
+
+            cap_ah = integrate_window(current_list, window_start_ts, window_end_ts)
+
+            final_rows.append(("normal", current_soc, next_soc, dist, cap_ah, tavg,
+                               tmax_v, tmax_sig, tmin_v, tmin_sig))
+            current_soc = next_soc
+
+        # Last partial window
+        if current_soc > end_soc:
+            window_start_ts = (
+                find_soc_ts(soc_list, current_soc, block_start, block_end_ts)
+                or block_start
+            )
+            window_end_ts = (
+                find_soc_ts(soc_list, end_soc, block_start, block_end_ts, reverse=True)
+                or block_end_ts
+            )
+
+            if odo_baseline is None:
+                ob = lookup_before(window_start_ts, odo_list)
+                if ob:
+                    odo_baseline = ob[1]
+
+            dist = 0.0
+            odo_end = lookup_before(window_end_ts, odo_list)
+            if odo_end and odo_baseline is not None:
+                dist = odo_end[1] - odo_baseline
+                if dist < 0:
+                    dist = 0.0
+                odo_baseline = odo_end[1]
+
+            # Keep Tavg exactly as before:
+            tavg, _ = window_temp_avg(temp_samples, window_start_ts, window_end_ts)
+
+            # NEW min/max + signal:
+            tmax_v, tmax_sig, tmin_v, tmin_sig = window_minmax_from_therms(
+                therm_samples, window_start_ts, window_end_ts, ntc_names, active_ntc=active_ntc
+            )
+
+            cap_ah = integrate_window(current_list, window_start_ts, window_end_ts)
+
+            final_rows.append(("normal", current_soc, end_soc, dist, cap_ah, tavg,
+                               tmax_v, tmax_sig, tmin_v, tmin_sig))
+
+        soc_baseline = end_soc
+
+        if uv_in_this_block:
+            if final_rows:
+                last = final_rows[-1]
+                # last tuple: (typ, sv, ev, odo, cap, tavg, tmax_v, tmax_sig, tmin_v, tmin_sig)
+                final_rows[-1] = ("uv",) + last[1:]
+            break
+
+    # ---------------------------------------------------------
+    # Distance from SOC <= 1%
+    # ---------------------------------------------------------
+    uv_detected = uv_ts is not None
+    low_soc_start_ts = None
+
+    for ts, soc in soc_list:
+        if soc <= 1.0:
+            low_soc_start_ts = ts
+            break
+
+    low_soc_found = low_soc_start_ts is not None
+    dist_after_low_soc = None
+    cap_after_low_soc = None
+
+    if low_soc_found:
+        end_ts_for_low_soc = uv_ts if uv_detected else t_end
+        cap_after_low_soc = integrate_window(current_list, low_soc_start_ts, end_ts_for_low_soc)
+
+        if odo_list:
+            odo_at_low = lookup_before(low_soc_start_ts, odo_list)
+            if odo_at_low:
+                if uv_detected:
+                    odo_at_end = lookup_before(uv_ts, odo_list)
+                else:
+                    odo_at_end = odo_list[-1]
+                if odo_at_end:
+                    dist_after_low_soc = max(0.0, odo_at_end[1] - odo_at_low[1])
+
+    return final_rows, total_range, dist_after_low_soc, cap_after_low_soc, uv_detected, low_soc_found
+
+
+# =========================================================
+#  DRAW TABLE PNG
+# =========================================================
+def draw_table_png(
     rows,
-    latch_row,
-    initial_to_final_row,
-    total_time,
-    total_ah,
-    latch_type,
-    vmin_at_latch,
-    vmax_peak,
-    result,
-    output
+    output,
+    total_cap_override=None,
+    total_range=0.0,
+    dist_after_low_soc=None,
+    cap_after_low_soc=None,
+    uv_detected=False,
+    low_soc_found=False,
+    energy_wh=None,
 ):
 
-    cols = ["SoC Window", "Duration", "Cap Exchange", "Temp Avg"]
-    col_w = [0.32, 0.28, 0.2, 0.2]
+    cols = ["SoC Window", "Odo", "Cap Exchange", "Temp Avg", "Temp Signal"]
+    col_w = [0.32, 0.12, 0.18, 0.18, 0.2]
+    total_rows = len(rows) + 2  # data rows + distance row + totals row
 
-    fig_h = 0.7 + 0.45 * (len(rows) + (1 if latch_row else 0) + 3)
-    fig, ax = plt.subplots(figsize=(12, fig_h))
+    # a bit taller because Temp cell may have 3 lines
+    fig_height = 0.7 + 0.45 * (total_rows + 1)
+    fig, ax = plt.subplots(figsize=(12, fig_height))
     ax.axis("off")
 
     header_h = 0.06
-    row_h = 0.075
-    y = 1 - header_h
+    row_h = 0.075  # bigger row height for multiline temp cell
 
+    y = 1 - header_h
+    y_top = 1.0
     x = 0
-    for h, w in zip(cols, col_w):
-        ax.add_patch(Rectangle((x, y), w, header_h, fc="#d0d0d0", ec="black"))
-        ax.text(x + w / 2, y + header_h / 2, h, ha="center", va="center")
-        x += w
+    for i, h in enumerate(cols):
+        ax.add_patch(Rectangle((x, y), col_w[i], header_h, fc="#d0d0d0", ec="black"))
+        ax.text(x + col_w[i] / 2, y + header_h / 2, h, ha="center", va="center")
+        x += col_w[i]
     y -= row_h
 
-    def draw_row(vals, bg="white"):
-        nonlocal y
+    total_cap = 0.0
+
+    for typ, sv, ev, odo, cap, tavg, tmax_v, tmax_sig, tmin_v, tmin_sig in rows:
+
+        tv = f"{tavg:.1f} C" if tavg is not None else ""
+        t_signal_parts = []
+        if tmax_v is not None:
+            t_signal_parts.append(f"Max {tmax_v:.1f}C ({tmax_sig})")
+        if tmin_v is not None:
+            t_signal_parts.append(f"Min {tmin_v:.1f}C ({tmin_sig})")
+        t_signal = "\n".join(t_signal_parts)
+
+        # Charge row shown in columns (yellow)
+        if typ == "charge":
+            sw = f"CHG: {sv:.2f}% to {ev:.2f}%"
+            cd = f"{odo:.2f}"
+            ce = f"{cap:.2f} Ah"
+
+            x = 0
+            for val, w in zip([sw, cd, ce, tv, t_signal], col_w):
+                ax.add_patch(Rectangle((x, y), w, row_h, fc="#fce88c", ec="black"))
+                ax.text(x + w / 2, y + row_h / 2, val, ha="center", va="center", fontsize=9)
+                x += w
+
+            total_cap += cap
+            y -= row_h
+            continue
+
+        if typ == "uv":
+            sw = f"{sv:.2f}% to (UV) {ev:.2f}%"
+        else:
+            sw = f"{sv:.2f}% to {ev:.2f}%"
+
+        cd = f"{odo:.2f}"
+        ce = f"{cap:.2f} Ah"
+
         x = 0
-        for v, w in zip(vals, col_w):
-            ax.add_patch(Rectangle((x, y), w, row_h, fc=bg, ec="black"))
-            ax.text(x + w / 2, y + row_h / 2, v, ha="center", va="center", fontsize=9)
+        for val, w in zip([sw, cd, ce, tv, t_signal], col_w):
+            ax.add_patch(Rectangle((x, y), w, row_h, fc="white", ec="black"))
+            ax.text(x + w / 2, y + row_h / 2, val, ha="center", va="center", fontsize=9)
             x += w
+
+        total_cap += cap
         y -= row_h
 
-    for row_data in rows:
-        if row_data[0] == "INACTIVE":
-            _, sv, ev, dur, ah, tavg = row_data
-            draw_row(
-                [
-                    f"INACTIVE: {sv:.2f}% → {ev:.2f}%",
-                    dur,
-                    f"{ah:.3f} Ah",
-                    f"{tavg:.1f} C" if tavg is not None else "",
-                ],
-                bg="#ffcccc",
-            )
-        else:
-            _, sv, ev, dur, ah, tavg = row_data
-            draw_row([f"{sv:.2f}% → {ev:.2f}%", dur, f"{ah:.3f} Ah", f"{tavg:.1f} C" if tavg else ""])
-
-    draw_row(initial_to_final_row, bg="#e6f2ff")
-
-    if latch_row:
-        draw_row(latch_row, bg="#fce88c")
-
-        draw_row(["TOTAL", total_time, f"{total_ah:.3f} Ah", ""], bg="#a0d0ff")
-
-    vmax_text = "N/A" if vmax_peak is None else f"{vmax_peak} mV"
-    vmin_text = "N/A" if vmin_at_latch is None else f"{vmin_at_latch} mV"
-    if latch_type == "NA":
-        footer = f"LATCH : NA | Vmin {vmin_text} | Vmax {vmax_text} | RESULT : {result}"
+    # Extra row for Distance after SoC <= 1% (with cap exchange)
+    if not low_soc_found:
+        msg = "Distance Covered SoC<=1% = N/A, Cap Exchange = N/A"
     else:
-        footer = f"LATCH : {latch_type.upper()} | Vmin {vmin_text} | Vmax {vmax_text} | RESULT : {result}"
+        dist_text = "N/A" if dist_after_low_soc is None else f"{dist_after_low_soc:.1f} km"
+        cap_text = "N/A" if cap_after_low_soc is None else f"{cap_after_low_soc:.2f} Ah"
+        if uv_detected:
+            msg = f"Distance Covered SoC<=1% to UV = {dist_text}, Cap Exchange = {cap_text}"
+        else:
+            msg = f"Distance Covered SoC<=1% = {dist_text} (UV Not detected), Cap Exchange = {cap_text}"
 
+    ax.add_patch(Rectangle((0, y), 1, row_h, fc="white", ec="black"))
     ax.text(
         0.5,
         y + row_h / 2,
-        footer,
+        msg,
         ha="center",
         va="center",
         fontsize=12,
-        color="red",
         fontweight="bold",
+        color="red",
+    )
+    y -= row_h
+
+    # Totals row
+    ax.add_patch(Rectangle((0, y), col_w[0], row_h, fc="white", ec="black"))
+
+    ax.add_patch(Rectangle((col_w[0], y), col_w[1], row_h, fc="#a0d0ff", ec="black"))
+    ax.text(
+        col_w[0] + col_w[1] / 2,
+        y + row_h / 2,
+        f"Range = {total_range:.1f} km",
+        ha="center",
+        va="center",
     )
 
-    ax.add_patch(Rectangle((0, y), 1, 1 - y, fill=False, ec="black", lw=1.0))
+    display_cap = total_cap_override if total_cap_override is not None else total_cap
+
+    ax.add_patch(
+        Rectangle((col_w[0] + col_w[1], y), col_w[2], row_h, fc="#a0d0ff", ec="black")
+    )
+    ax.text(
+        col_w[0] + col_w[1] + col_w[2] / 2,
+        y + row_h / 2,
+        f"Total CAP exc = {display_cap:.2f} Ah",
+        ha="center",
+        va="center",
+    )
+    # ---- ENERGY CELL (rightmost column) ----
+    if energy_wh is not None:
+        energy_text = f"Energy Used = {abs(energy_wh):.0f} Wh"
+    else:
+        energy_text = ""
+
+    energy_x = sum(col_w[:-1])  # start of last column
+    energy_w = col_w[-1]
+
+    ax.add_patch(Rectangle((energy_x, y), energy_w, row_h, fc="white", ec="black"))
+
+    ax.text(
+        energy_x + energy_w / 2,
+        y + row_h / 2,
+        energy_text,
+        ha="center",
+        va="center",
+        fontsize=10,
+        fontweight="bold",
+        color="red",
+    )
+
+    x = col_w[0] + col_w[1] + col_w[2]
+    for w in col_w[3:]:
+        ax.add_patch(Rectangle((x, y), w, row_h, fc="white", ec="black"))
+        x += w
+
+    # Keep only the outer border so the "Distance Covered" row stays merged across columns
+    x_lines = [0]
+    for w in col_w:
+        x_lines.append(x_lines[-1] + w)
+
+    y_lines = [y_top, y_top - header_h]
+    for i in range(total_rows):
+        y_lines.append(y_top - header_h - (i + 1) * row_h)
+
+    ax.add_patch(
+        Rectangle(
+            (x_lines[0], y_lines[-1]),
+            x_lines[-1] - x_lines[0],
+            y_lines[0] - y_lines[-1],
+            fill=False,
+            edgecolor="black",
+            linewidth=1.0,
+            zorder=5,
+        )
+    )
+
+    # pad axes a bit so bbox cropping does not shave off the outer border lines
     ax.set_xlim(-0.002, 1.002)
-    ax.set_ylim(y - 0.01, 1.01)
+    ax.set_ylim(y_lines[-1] - 0.01, y_lines[0] + 0.01)
 
     plt.tight_layout()
     plt.savefig(output, dpi=150, bbox_inches="tight", pad_inches=0.1)
     plt.close()
 
+
+# =========================================================
+#  MAIN
+# =========================================================
 def main():
-    trc = get_trc_file()
-    out = Path(__file__).resolve().parent
 
-    for fname in ["Primary_vs_Secondary_Latch_results.json", 
-                  "Primary_vs_Secondary_Latch_summary.json", 
-                  "Primary_vs_Secondary_Latch_plot.png"]:
-        fpath = out / fname
-        if fpath.exists():
-            fpath.unlink()
+    trc_env = os.environ.get("TRC_FILE")
+    trc_saved = Path(__file__).resolve().parent / "selected_trc.txt"
 
-    with open(trc, "r", encoding="utf-8", errors="ignore") as f:
-        total_lines = sum(1 for _ in f)
+    if len(sys.argv) > 1:
+        trc = sys.argv[1]
+    elif trc_env:
+        trc = trc_env
+    elif trc_saved.exists():
+        trc = trc_saved.read_text().strip()
+    else:
+        trc = select_trc_file()
 
-    parse_cb = progress_by_steps(0, 100, PROGRESS_STEP)
+    parse_cb = progress_by_bytes(trc, start=0.0, end=60.0, step=PROGRESS_STEP)
+    therm_cb = progress_by_bytes(trc, start=60.0, end=85.0, step=PROGRESS_STEP)
+    charge_cb = progress_by_bytes(trc, start=85.0, end=95.0, step=PROGRESS_STEP)
+
+    soc_list, current_list, odo_list, ntc_list, uv_list, voltage_list = parse_trc(trc, progress_cb=parse_cb)
+    total_energy_wh = integrate_energy(current_list, voltage_list)
+
+    # NEW: parse per-sensor therm signals (for min/max + signal name in table only)
+    therm_samples = parse_thermistor_frames(trc, progress_cb=therm_cb, total_lines=None)
 
     (
-        soc_list,
-        latch_list,
-        current_list,
-        temp_list,
-        ff18_list,
-        vmin_list,
-        vmax_list,
-        log_gaps,
-    ) = parse_trc(trc, parse_cb, total_lines)
+        rows,
+        total_range,
+        dist_after_low_soc,
+        cap_after_low_soc,
+        uv_detected,
+        low_soc_found,
+    ) = build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, therm_samples, trc)
 
-    trc_end_ts = None
-    for seq in (soc_list, latch_list, current_list, temp_list, vmin_list, vmax_list):
-        if not seq:
-            continue
-        ts = max((x[0] for x in seq if x and x[0] is not None), default=None)
-        if ts and (trc_end_ts is None or ts > trc_end_ts):
-            trc_end_ts = ts
-    if ff18_list:
-        ts = max(ff18_list)
-        if ts and (trc_end_ts is None or ts > trc_end_ts):
-            trc_end_ts = ts
+    out = Path(__file__).resolve().parent
 
-    session_bounds = get_charge_session_bounds(ff18_list, latch_list, trc_end_ts)
-
-    if not session_bounds:
-        result_value = "PASS"
-
-        results = {"Result": result_value}
-        summary = {
-            "test_name": "Primary vs Secondary Latch",
-            "trc_file": os.path.basename(trc),
-            "latch_type": "NA",
-            "vmin_at_latch_mv": None,
-            "vmax_peak_mv": None,
-            "total_capacity_ah": 0.0,
-            "total_duration": "0hr,0min,0s",
-            "result": result_value,
-            "reason": "NO CHARGING SESSION (18FF50E5 not present in TRC)",
-        }
-
-        with open(out / "Primary_vs_Secondary_Latch_results.json", "w") as f:
-            json.dump(results, f, indent=2)
-
-        with open(out / "Primary_vs_Secondary_Latch_summary.json", "w") as f:
-            json.dump(summary, f, indent=2)
-
-        draw_charging_table(
-            rows=[],
-            latch_row=None,
-            initial_to_final_row=[
-                "Initial → Final SoC",
-                "0hr,0min,0s",
-                "0.000 Ah",
-                "",
-            ],
-            total_time="0hr,0min,0s",
-            total_ah=0.0,
-            latch_type="NA",
-            vmin_at_latch=None,
-            vmax_peak=None,
-            result=result_value,
-            output=out / "Primary_vs_Secondary_Latch_plot.png",
-        )
-
-        print("PROGRESS 100.0", flush=True)
-        return
-
-    session_start_ts, session_end_ts = session_bounds
-
-    intervals = build_charge_intervals(
-        ff18_list,
-        session_start_ts,
-        session_end_ts,
-        inactive_gap=INACTIVE_GAP_SEC,
-    )
-    charge_sessions = _intervals_to_active_sessions(intervals)
-
-    def _env_true(name: str) -> bool:
-        v = os.environ.get(name)
-        if v is None:
-            return False
-        return str(v).strip().lower() in {"1", "true", "yes", "on"}
-
-    if _env_true("DEBUG_FF18"):
-        session_ff18 = sorted(ts for ts in ff18_list if session_start_ts <= ts <= session_end_ts)
-        print(f"DEBUG_FF18 session_start={session_start_ts} session_end={session_end_ts}")
-        print(f"DEBUG_FF18 ff18_count_in_session={len(session_ff18)}")
-
-        def _prev_ff18(t):
-            prev = None
-            for x in session_ff18:
-                if x <= t:
-                    prev = x
-                else:
-                    break
-            return prev
-
-        def _next_ff18(t):
-            for x in session_ff18:
-                if x >= t:
-                    return x
-            return None
-
-        for state, s, e in intervals:
-            if state != "INACTIVE":
-                continue
-            dur = (e - s).total_seconds()
-            if dur <= 0:
-                continue
-            prev = _prev_ff18(s)
-            nxt = _next_ff18(e)
-            raw_gap = None
-            if prev and nxt:
-                raw_gap = (nxt - prev).total_seconds()
-            print(
-                "DEBUG_FF18 INACTIVE "
-                f"[{s} -> {e}] dur={dur:.3f}s "
-                f"prev_ff18={prev} next_ff18={nxt} raw_ff18_gap={raw_gap}"
-            )
-
-    rows, total_ah, total_time = [], 0.0, timedelta()
-    latch_row = None
-
-    real_soc = sorted(soc_list, key=lambda x: x[0])
-
-    if not real_soc:
-        result_value = "PASS"
-
-        results = {"Result": result_value}
-        summary = {
-            "test_name": "Primary vs Secondary Latch",
-            "trc_file": os.path.basename(trc),
-            "latch_type": "NA",
-            "vmin_at_latch_mv": None,
-            "vmax_peak_mv": None,
-            "total_capacity_ah": 0.0,
-            "total_duration": "0hr,0min,0s",
-            "result": result_value,
-            "reason": "No SoC data present in TRC; treated as PASS by default",
-        }
-
-        with open(out / "Primary_vs_Secondary_Latch_results.json", "w") as f:
-            json.dump(results, f, indent=2)
-
-        with open(out / "Primary_vs_Secondary_Latch_summary.json", "w") as f:
-            json.dump(summary, f, indent=2)
-
-        draw_charging_table(
-            rows=[],
-            latch_row=None,
-            initial_to_final_row=[
-                "Initial → Final SoC",
-                "0hr,0min,0s",
-                "0.000 Ah",
-                "",
-            ],
-            total_time="0hr,0min,0s",
-            total_ah=0.0,
-            latch_type="NA",
-            vmin_at_latch=None,
-            vmax_peak=None,
-            result=result_value,
-            output=out / "Primary_vs_Secondary_Latch_plot.png",
-        )
-
-        print("PROGRESS 100.0", flush=True)
-        return
-
-    first_soc_ts = real_soc[0][0]
-    first_100_ts = next((ts for ts, soc in real_soc if soc >= 100.0), None)
-
-    final_soc_ts = None
-    for ts, soc in real_soc:
-        if first_100_ts and ts >= first_100_ts:
-            break
-        final_soc_ts = ts
-
-    end_ts = first_100_ts if first_100_ts else real_soc[-1][0]
-    if session_end_ts and end_ts and end_ts > session_end_ts:
-        end_ts = session_end_ts
-
-    rows, _ = build_charge_windows(
-        soc_list,
-        current_list,
-        temp_list,
-        session_start_ts,
-        end_ts,
-        charge_sessions,
-        inactive_gap=INACTIVE_GAP_SEC,
-    )
-
-    if _env_true("DEBUG_FF18"):
-        inactive_rows = [r for r in rows if r and r[0] == "INACTIVE"]
-        print(f"DEBUG_FF18 inactive_rows_in_table={len(inactive_rows)}")
-        for r in inactive_rows[:10]:
-            status, sv, ev, dur, ah, tavg = r
-            print(f"DEBUG_FF18 TABLE {status} {sv:.2f}%->{ev:.2f}% dur={dur} ah={ah:.4f}")
-
-    rows = merge_tail_active_windows(rows, threshold_soc=90.0)
-
-    active_duration_td = sum(
-        (parse_duration_str(row[3]) for row in rows if row[0] == "ACTIVE"),
-        timedelta(0),
-    )
-
-    initial_to_final_ah = sum(row[4] for row in rows if row[0] == "ACTIVE")
-
-    temp_weighted_sum = 0.0
-    temp_total_seconds = 0.0
-    for row in rows:
-        if row[0] != "ACTIVE":
-            continue
-        tavg = row[5]
-        if tavg is None:
-            continue
-        dur_td = parse_duration_str(row[3])
-        secs = dur_td.total_seconds()
-        if secs <= 0:
-            continue
-        temp_weighted_sum += tavg * secs
-        temp_total_seconds += secs
-
-    initial_to_final_tavg = (
-        temp_weighted_sum / temp_total_seconds if temp_total_seconds > 0 else None
-    )
-
-    total_ah = sum(row[4] for row in rows)
-
-    latch_ts = next((ts for ts, v in latch_list if v == 1 and ts >= session_start_ts), None)
-
-    if latch_ts and first_100_ts and latch_ts > first_100_ts:
-        ah = integrate_window(current_list, first_100_ts, latch_ts)
-        tavg = window_temp_avg(temp_list, first_100_ts, latch_ts)
-        latch_duration_td = latch_ts - first_100_ts
-        latch_row = ["100% → True Latch", format_duration(latch_duration_td), f"{ah:.2f} Ah", f"{tavg:.1f} C"]
-        total_ah += ah
-    else:
-        latch_duration_td = timedelta(0)
-
-    # Initial → Final SoC row: duration is sum of ACTIVE only, Cap Exchange and Temp Avg are totals for all rows
-    active_rows = [row for row in rows if row[0] == "ACTIVE"]
-    active_duration_td = sum((parse_duration_str(row[3]) for row in active_rows), timedelta(0))
-    initial_to_final = format_duration(active_duration_td)
-    # Cap Exchange and Temp Avg: use total_ah and initial_to_final_tavg already calculated above (all rows)
-    init_ah_str = f"{total_ah:.2f} Ah" if total_ah is not None else ""
-    init_tavg_str = (
-        f"{initial_to_final_tavg:.1f} C" if initial_to_final_tavg is not None else ""
-    )
-    initial_to_final_row = [
-        "Initial → Final SoC",
-        initial_to_final,
-        init_ah_str,
-        init_tavg_str,
-    ]
-
-    total_time_td = active_duration_td + latch_duration_td
-    total_time = format_duration(total_time_td)
-
-    latch_type, vmin_at_latch, vmax_at_latch = classify_latch(
-        latch_ts, vmin_list, vmax_list
-    )
-    if latch_type == "NA":
-        # Find global maximum Vmax and corresponding Vmin
-        if vmax_list and vmin_list:
-            n = min(len(vmax_list), len(vmin_list))
-            vmax_values = vmax_list[:n]
-            vmin_values = vmin_list[:n]
-            max_vmax_idx = max(range(n), key=lambda i: vmax_values[i][1])
-            vmax_at_latch = int(vmax_values[max_vmax_idx][1])
-            vmin_at_latch = int(vmin_values[max_vmax_idx][1])
-        else:
-            vmax_at_latch = None
-            vmin_at_latch = None
-
-    result = decide_pass_fail(latch_ts, vmax_list, session_start_ts, session_end_ts)
-
-    results = {"Result": result}
-
+    # keep summary json as-is (raw current integration totals)
+    stats = summarize_current(current_list)
     summary = {
-        "test_name": "Primary vs Secondary Latch",
-        "trc_file": os.path.basename(trc),
-        "latch_type": latch_type,
-        "vmin_at_latch_mv": vmin_at_latch,
-        "vmax_peak_mv": vmax_at_latch,
-        "total_capacity_ah": round(total_ah, 2),
-        "total_duration": total_time,
-        "result": result
+        "Capacity_Summary": {
+            "Charge_Ah": f"{stats['charge_ah']:.4f}",
+            "Discharge_Ah": f"{stats['discharge_ah']:.4f}",
+            "Capacity_Exchange_Ah": f"{stats['exchange_ah']:.4f}",
+            "Valid_dt_Count": stats["valid_dt_count"],
+            "Default_dt_Count": stats["default_dt_count"],
+            "Default_dt_Value_s": stats["default_dt_value"],
+        }
     }
 
-    with open(out / "Primary_vs_Secondary_Latch_results.json", "w") as f:
-        json.dump(results, f, indent=2)
-
-    with open(out / "Primary_vs_Secondary_Latch_summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
-
-    draw_charging_table(
-        rows,
-        latch_row,
-        initial_to_final_row,
-        total_time,
-        total_ah,
-        latch_type,
-        vmin_at_latch,
-        vmax_at_latch,
-        result,
-        out / "Primary_vs_Secondary_Latch_plot.png",
+    (out / "Capacity_check_summary.json").write_text(json.dumps(summary, indent=4))
+    (out / "Capacity_check_results.json").write_text(
+        json.dumps({"Result": "PASS"}, indent=4)
     )
 
+    # IMPORTANT: do NOT override total cap; table total includes charging rows now
+    draw_table_png(
+        rows,
+        out / "Capacity_check_plot.png",
+        total_cap_override=None,
+        total_range=total_range,
+        dist_after_low_soc=dist_after_low_soc,
+        cap_after_low_soc=cap_after_low_soc,
+        uv_detected=uv_detected,
+        low_soc_found=low_soc_found,
+        energy_wh=total_energy_wh,
+    )
     print("PROGRESS 100.0", flush=True)
 
+
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        try:
-            out = Path(__file__).resolve().parent
-            fallback_results = {"Result": "PASS"}
-            with open(out / "Primary_vs_Secondary_Latch_results.json", "w") as f:
-                json.dump(fallback_results, f, indent=2)
-
-            fallback_summary = {
-                "test_name": "Primary vs Secondary Latch",
-                "trc_file": os.path.basename(sys.argv[1]) if len(sys.argv) > 1 else None,
-                "latch_type": "NA",
-                "vmin_at_latch_mv": None,
-                "vmax_peak_mv": None,
-                "total_capacity_ah": 0.0,
-                "total_duration": "0hr,0min,0s",
-                "result": "PASS",
-                "reason": "NO CHARGING SESSION (18FF50E5 OBC CAN ID not present in TRC)",
-            }
-            with open(out / "Primary_vs_Secondary_Latch_summary.json", "w") as f:
-                json.dump(fallback_summary, f, indent=2)
-
-            try:
-                draw_charging_table(
-                    rows=[],
-                    latch_row=None,
-                    initial_to_final_row=[
-                        "Initial → Final SoC",
-                        "0hr,0min,0s",
-                        "0.000 Ah",
-                        "",
-                    ],
-                    total_time="0hr,0min,0s",
-                    total_ah=0.0,
-                    latch_type="NA",
-                    vmin_at_latch=None,
-                    vmax_peak=None,
-                    result="PASS",
-                    output=out / "Primary_vs_Secondary_Latch_plot.png",
-                )
-            except Exception:
-                pass
-        except Exception:
-            pass
-        print("PROGRESS 100.0", flush=True)
-        sys.exit(0)
+    main()
