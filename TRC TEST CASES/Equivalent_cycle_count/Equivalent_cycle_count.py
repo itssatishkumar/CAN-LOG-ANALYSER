@@ -37,14 +37,12 @@ class CycleCounter:
             self.last_valid = raw_value
             return self.last_valid
 
-        # Accept increasing values immediately
         if raw_value >= self.last_valid:
             self.last_valid = raw_value
             self.drop_candidate = None
             self.drop_count = 0
             return self.last_valid
 
-        # Handle decreasing values
         if self.drop_candidate is None or raw_value != self.drop_candidate:
             self.drop_candidate = raw_value
             self.drop_count = 1
@@ -61,11 +59,16 @@ class CycleCounter:
 
 def parse_trc_cycles(trc_path: str, progress_cb=None):
 
+    pattern_0109 = re.compile(
+        r"\s*\d+\)\s+[\d\-:\. ]+\s+(Rx|Tx)\s+0109\s+8\s+(.+)"
+    )
+
     pattern_012b = re.compile(
         r"\s*\d+\)\s+[\d\-:\. ]+\s+(Rx|Tx)\s+012B\s+8\s+(.+)"
     )
 
     cycles = []
+    bms_state = None
 
     with open(trc_path, "r", errors="ignore") as f:
 
@@ -74,12 +77,32 @@ def parse_trc_cycles(trc_path: str, progress_cb=None):
             if progress_cb:
                 progress_cb(len(line))
 
-            match = pattern_012b.match(line)
+            # ---- BMS STATE FRAME (0109) ----
+            match_0109 = pattern_0109.match(line)
 
-            if not match:
+            if match_0109:
+
+                data_str = match_0109.group(2).strip().split()
+
+                if len(data_str) >= 5:
+                    try:
+                        bytes_ = [int(x, 16) for x in data_str[:8]]
+
+                        # SG_ BMS_State : 32|8 → byte index 4
+                        bms_state = bytes_[4]
+
+                    except ValueError:
+                        pass
+
                 continue
 
-            data_str = match.group(2).strip().split()
+            # ---- CYCLE COUNT FRAME (012B) ----
+            match_012b = pattern_012b.match(line)
+
+            if not match_012b:
+                continue
+
+            data_str = match_012b.group(2).strip().split()
 
             if len(data_str) < 8:
                 continue
@@ -91,7 +114,9 @@ def parse_trc_cycles(trc_path: str, progress_cb=None):
 
             cycle = bytes_[6] + (bytes_[7] << 8)
 
-            cycles.append(cycle)
+            # Accept cycle only when BMS_State != 0
+            if bms_state is not None and bms_state != 0:
+                cycles.append(cycle)
 
     return cycles
 
@@ -145,7 +170,6 @@ def build_summary(valid_series):
 
         delta = valid_series[i] - valid_series[i - 1]
 
-        # Allowed increments: 0 or +1
         if delta > 1:
             verdict = "FAIL"
             break
@@ -225,10 +249,10 @@ def main():
     raw_cycles = parse_trc_cycles(trc_path, progress_cb=progress_cb)
 
     if not raw_cycles:
-        print("ERROR: No 0x012B frames found in TRC.")
+        print("ERROR: No valid 0x012B frames found in TRC.")
         sys.exit(1)
 
-    print(f"Parsed {len(raw_cycles)} cycle readings from TRC.")
+    print(f"Parsed {len(raw_cycles)} valid cycle readings.")
 
     results, valid_series = run_cycle_logic(raw_cycles)
 
