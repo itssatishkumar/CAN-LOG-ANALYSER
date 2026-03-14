@@ -37,12 +37,12 @@ PLOT_FILE    = "BMS_Current_in_Ready_Mode_plot.png"
 # ---------------------------------------------------------------------
 BMS_STATE_ID     = 0x0109
 PACK_CURRENT_ID  = 0x0110
-BMS_ALLOWED_VALUES = {0x01, 0x04}  # only evaluate current when state is one of these
+BMS_ALLOWED_VALUES = {0x01, 0x04}
 SCALE_FACTOR     = 1e-5
-THRESHOLD_A      = 0.2   # PASS if |max_current| <= 0.2A
+THRESHOLD_A      = 0.2
 
 # ---------------------------------------------------------------------
-# FIXED TRC PARSER REGEX (WORKS FOR YOUR REAL FILE)
+# TRC PARSER REGEX
 # ---------------------------------------------------------------------
 pattern = re.compile(
     r"\s*\d+\)\s+"
@@ -59,7 +59,7 @@ pattern = re.compile(
 # ---------------------------------------------------------------------
 ready_records = []
 current_bms_state = None
-pending_records = []  # 0110 samples awaiting confirmation from the next 0109 state
+pending_records = []
 
 # ---------------------------------------------------------------------
 # PARSE TRC FILE
@@ -84,7 +84,6 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
 
         data = [int(b, 16) for b in bytes_hex[:dlc]]
 
-        # timestamp
         dt, _, timestamp = fast_parse_ts(date_str, time_str, ms_str)
 
         # ---------------------------------------------------------
@@ -92,9 +91,8 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         # ---------------------------------------------------------
         if can_id == BMS_STATE_ID:
             if len(data) >= 5:
-                next_bms_state = data[4]    # BYTE-5 EXACT
+                next_bms_state = data[4]
 
-                # Confirm/discard pending 0110 samples using this *next* state.
                 if pending_records:
                     if next_bms_state in BMS_ALLOWED_VALUES:
                         ready_records.extend(pending_records)
@@ -104,22 +102,19 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
 
         # ---------------------------------------------------------
         # 0110 → PACK CURRENT
-        # Keep sample only if:
-        #  - previous 0109 state is allowed (0x01/0x04), and
-        #  - the next 0109 state (seen later in the log) is also allowed.
         # ---------------------------------------------------------
         if can_id == PACK_CURRENT_ID and current_bms_state in BMS_ALLOWED_VALUES:
 
             if len(data) < 8:
                 continue
 
-            # last 4 bytes little endian signed 32-bit
             raw = (
                 data[4] |
                 (data[5] << 8) |
                 (data[6] << 16) |
                 (data[7] << 24)
             )
+
             if raw & 0x80000000:
                 raw -= 0x100000000
 
@@ -132,12 +127,10 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
                 "current_A": round(current_A, 5)
             })
 
-# If the file ends before another 0109 arrives, we cannot confirm the "after" state.
-# Discard any remaining pending 0110 samples.
 pending_records.clear()
 
 # ---------------------------------------------------------------------
-# FIND ONLY MAX CURRENT FOR SUMMARY
+# FIND MAX CURRENT
 # ---------------------------------------------------------------------
 if ready_records:
     max_rec = max(ready_records, key=lambda r: abs(r["current_A"]))
@@ -155,6 +148,11 @@ with open(SUMMARY_FILE, "w") as f:
     json.dump(summary_data, f, indent=2)
 
 # ---------------------------------------------------------------------
+# FAILURE COUNT (ADDED)
+# ---------------------------------------------------------------------
+fail_count = sum(1 for r in ready_records if abs(r["current_A"]) > THRESHOLD_A)
+
+# ---------------------------------------------------------------------
 # PASS / FAIL LOGIC
 # ---------------------------------------------------------------------
 if ready_records:
@@ -167,18 +165,18 @@ with open(RESULT_FILE, "w") as f:
     json.dump({"Result": result_str}, f)
 
 # ---------------------------------------------------------------------
-# CLEAN, SIMPLE PLOT WITH ONLY MAX POINT
+# CLEAN PLOT
 # ---------------------------------------------------------------------
 plt.figure(figsize=(10,6))
 plt.title("BMS Current in READY Mode")
 
 if ready_records:
-    # Only one point: max
+
     plt.scatter(1, summary_data["max_current_A"], color="red", s=80)
     plt.xticks([1], ["Max Current"])
     plt.ylabel("Pack Current (A)")
 
-    # Annotate PASS/FAIL
+    # RESULT BOX (unchanged)
     plt.text(
         0.5, 0.9,
         f"Result: {result_str} (Max |I| = {abs(summary_data['max_current_A']):.5f} A)",
@@ -186,7 +184,14 @@ if ready_records:
         fontsize=12, bbox=dict(boxstyle="round", facecolor="white", alpha=0.6)
     )
 
-    # Table for only ONE record
+    # FAILURE COUNT BOX (only addition)
+    plt.text(
+        0.5, 0.83,
+        f"FAILURE COUNT : {fail_count}",
+        ha="center", transform=plt.gca().transAxes,
+        fontsize=12, bbox=dict(boxstyle="round", facecolor="white", alpha=0.6)
+    )
+
     table_data = [
         [summary_data["timestamp"], f"{summary_data['max_current_A']:.5f}"]
     ]
@@ -197,7 +202,9 @@ if ready_records:
         loc='bottom',
         cellLoc='center'
     )
+
     plt.subplots_adjust(bottom=0.25)
+
 else:
     plt.text(0.5, 0.5, "No READY Mode samples found", ha='center', va='center')
     plt.axis('off')
