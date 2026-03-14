@@ -6,6 +6,10 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog
 
+def _excel_serial_to_datetime(serial: float) -> datetime:
+    excel_epoch = datetime(1899, 12, 30)
+    return excel_epoch + timedelta(days=serial)
+
 RE_STARTTIME_SEC = re.compile(r"^\s*;\$STARTTIME\s*=\s*([0-9.]+)")
 RE_STARTTIME_STR = re.compile(r"Start time:\s*(.+)")
 RE_FRAME = re.compile(
@@ -261,7 +265,11 @@ def parse_trc_file(filepath: str):
     if not frames_raw:
         raise ValueError(f"No frames found in {filepath}")
 
-    start_dt = _parse_start_datetime(start_str)
+    # Use $STARTTIME because it is locale-independent
+    if start_sec is not None:
+        start_dt = _excel_serial_to_datetime(start_sec)
+    else:
+        start_dt = _parse_start_datetime(start_str)
 
     # FIRST FRAME = Start time
     offset_base = frames_raw[0][0]
