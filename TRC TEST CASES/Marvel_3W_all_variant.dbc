@@ -201,7 +201,7 @@ BO_ 372 CellVoltage_Group_27: 8 Vector__XXX
  SG_ CellVoltage_108 : 48|16@1+ (0.1,0) [0|0] "mV" Vector__XXX
  SG_ CellVoltage_107 : 32|16@1+ (0.1,0) [0|0] "mV" Vector__XXX
  SG_ CellVoltage_106 : 16|16@1+ (0.1,0) [0|0] "mV" Vector__XXX
- SG_ CellVoltage_104 : 0|16@1+ (0.1,0) [0|0] "mV" Vector__XXX
+ SG_ CellVoltage_105 : 0|16@1+ (0.1,0) [0|0] "mV" Vector__XXX
 
 BO_ 373 CellVoltage_Group_28: 8 Vector__XXX
  SG_ CellVoltage_112 : 48|16@1+ (0.1,0) [0|0] "mV" Vector__XXX
