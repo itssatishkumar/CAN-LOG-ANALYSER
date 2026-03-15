@@ -537,7 +537,8 @@ def integrate_window(current_list, start_ts, end_ts):
         if dt <= 0 or dt > 0.5:
             dt = DEFAULT_DT
 
-        As += I * dt
+        if I < 0:
+            As += (-I) * dt
 
     return As / 3600.0
 
@@ -573,8 +574,9 @@ def integrate_energy(current_list, voltage_list):
             continue
 
         # Energy = V * I * dt (Joules)
-        energy_step = last_voltage * current * dt
-        total_energy_j += energy_step
+        if current < 0:
+            energy_step = last_voltage * (-current) * dt
+            total_energy_j += energy_step
 
     # convert Joules to Wh
     total_energy_wh = total_energy_j / 3600.0
@@ -609,7 +611,7 @@ def summarize_current(current_list):
     return {
         "charge_ah": pos_as / 3600.0,
         "discharge_ah": neg_as / 3600.0,
-        "exchange_ah": (pos_as + neg_as) / 3600.0,
+        "exchange_ah": abs(neg_as) / 3600.0,
         "valid_dt_count": valid,
         "default_dt_count": default,
         "default_dt_value": DEFAULT_DT,
@@ -852,8 +854,10 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, therm_sam
 
             cap_ah = integrate_window(current_list, window_start_ts, window_end_ts)
 
-            final_rows.append(("normal", current_soc, next_soc, dist, cap_ah, tavg,
-                               tmax_v, tmax_sig, tmin_v, tmin_sig))
+            cap_exc = cap_ah
+
+            final_rows.append(("normal", current_soc, next_soc, dist, cap_exc, tavg,
+                   tmax_v, tmax_sig, tmin_v, tmin_sig))
             current_soc = next_soc
 
         # Last partial window
@@ -890,8 +894,10 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, therm_sam
 
             cap_ah = integrate_window(current_list, window_start_ts, window_end_ts)
 
-            final_rows.append(("normal", current_soc, end_soc, dist, cap_ah, tavg,
-                               tmax_v, tmax_sig, tmin_v, tmin_sig))
+            cap_exc = cap_ah
+
+            final_rows.append(("normal", current_soc, end_soc, dist, cap_exc, tavg,
+                   tmax_v, tmax_sig, tmin_v, tmin_sig))
 
         soc_baseline = end_soc
 
@@ -919,7 +925,8 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, therm_sam
 
     if low_soc_found:
         end_ts_for_low_soc = uv_ts if uv_detected else t_end
-        cap_after_low_soc = integrate_window(current_list, low_soc_start_ts, end_ts_for_low_soc)
+        cap_tmp = integrate_window(current_list, low_soc_start_ts, end_ts_for_low_soc)
+        cap_after_low_soc = cap_tmp
 
         if odo_list:
             odo_at_low = lookup_before(low_soc_start_ts, odo_list)
@@ -993,8 +1000,6 @@ def draw_table_png(
                 ax.add_patch(Rectangle((x, y), w, row_h, fc="#fce88c", ec="black"))
                 ax.text(x + w / 2, y + row_h / 2, val, ha="center", va="center", fontsize=9)
                 x += w
-
-            total_cap += cap
             y -= row_h
             continue
 
@@ -1065,7 +1070,7 @@ def draw_table_png(
     )
     # ---- ENERGY CELL (rightmost column) ----
     if energy_wh is not None:
-        energy_text = f"Energy Used = {abs(energy_wh):.0f} Wh"
+        energy_text = f"Energy Used = {energy_wh:.0f} Wh"
     else:
         energy_text = ""
 
