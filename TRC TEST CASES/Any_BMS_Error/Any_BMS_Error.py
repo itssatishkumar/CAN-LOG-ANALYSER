@@ -213,7 +213,6 @@ error_states = {
 first_ts_ms = None
 last_v_samples = []  # capped FIFO with latest voltage/SoC samples (recent history)
 latest_soc = None
-uv_context_added = False  # ensure UV context only on first UV instance
 ov_context_added = False  # ensure OV context only on first OV instance
 global_min_v_sample = None  # track absolute minimum Vmin over entire session
 
@@ -354,11 +353,11 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
                         "End_Timestamp": ts_string,
                         "Active_Frames": 1
                     }
-                    if name == "UV_ERROR" and not uv_context_added:
+                    if name == "UV_ERROR":
                         uv_ctx = compute_uv_context()
                         if uv_ctx:
                             new_instance["UV_Context"] = uv_ctx
-                        uv_context_added = True
+
                     if name == "OV_ERROR" and not ov_context_added:
                         ov_ctx = compute_ov_context()
                         if ov_ctx:
@@ -404,7 +403,11 @@ for name in DISPLAY_ORDER:
 
     value_field = ""
     if name == "UV_ERROR":
-        uv_ctx = instances[0].get("UV_Context") if instances else None
+        uv_ctx = None
+        if instances:
+            uv_contexts = [i.get("UV_Context") for i in instances if i.get("UV_Context")]
+            if uv_contexts:
+                uv_ctx = min(uv_contexts, key=lambda x: x["Selected_Vmin"])
         if uv_ctx:
             entry["UV_Context"] = uv_ctx
             if all(uv_ctx.get(k) is not None for k in ["Selected_Vmin", "Selected_Vmax", "Selected_SoC"]):
