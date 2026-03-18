@@ -266,13 +266,38 @@ def parse_trc_file(filepath: str):
         raise ValueError(f"No frames found in {filepath}")
 
     # Use $STARTTIME because it is locale-independent
+    start_dt_excel = None
+    start_dt_text = None
+
     if start_sec is not None:
-        start_dt = _excel_serial_to_datetime(start_sec)
+        try:
+            start_dt_excel = _excel_serial_to_datetime(start_sec)
+        except:
+            pass
+
+    if start_str is not None:
+        try:
+            start_dt_text = _parse_start_datetime(start_str)
+        except:
+            pass
+
+    if start_dt_excel and start_dt_text:
+        diff = abs((start_dt_excel - start_dt_text).total_seconds())
+        if diff < 5:
+            start_dt = start_dt_excel
+        else:
+            start_dt = start_dt_text
+    elif start_dt_text:
+        start_dt = start_dt_text
+    elif start_dt_excel:
+        start_dt = start_dt_excel
     else:
-        start_dt = _parse_start_datetime(start_str)
+        raise ValueError(f"No valid start time in {filepath}")
+    if not (2010 <= start_dt.year <= 2100):
+        raise ValueError(f"Invalid start year: {start_dt} in {filepath}")
 
     # FIRST FRAME = Start time
-    offset_base = frames_raw[0][0]
+    offset_base = min(f[0] for f in frames_raw)
 
     frames = []
     for offset, ftype, canid, dlc, data in frames_raw:
@@ -292,7 +317,7 @@ def merge_trcs(filepaths):
         try:
             start_sec, start_str, start_dt, frames = parse_trc_file(fp)
             all_files.append((start_sec, start_str, start_dt, frames))
-            print(f"Loaded: {fp}")
+            print(f"{fp} → start_dt = {start_dt}")
         except Exception as e:
             print(f"Skipping {fp}: {e}")
 
@@ -300,11 +325,14 @@ def merge_trcs(filepaths):
         raise RuntimeError("No valid TRC files selected.")
 
     all_files.sort(key=lambda x: x[2])
+    years = [f[2].year for f in all_files]
+    if max(years) - min(years) > 2:
+        raise RuntimeError(f"Time mismatch across files: {years}")
 
     seen = set()
     unique = []
     for st, st_str, st_dt, fr in all_files:
-        dedup_key = st if st is not None else st_dt
+        dedup_key = round(st_dt.timestamp(), 2)
         if dedup_key not in seen:
             unique.append((st, st_str, st_dt, fr))
             seen.add(dedup_key)
@@ -313,9 +341,9 @@ def merge_trcs(filepaths):
     for _st, _st_str, _st_dt, frames in unique:
         merged_all.extend(frames)
 
-    merged_all.sort(key=lambda x: x[0])
+    merged_all.sort(key=lambda x: (x[0], x[2]))
 
-    base_start_sec = unique[0][0] if unique[0][0] is not None else unique[0][2].timestamp()
+    base_start_sec = unique[0][2].timestamp() / 86400 + 25569
     base_start_str = unique[0][1]
     earliest_dt = unique[0][2]
 
