@@ -1,14 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: ascii -*-
-"""
-Build a tracker DOCX with:
- - Page 1: vehicle/BMS summary + reset counts/results (read from tracker_summary.csv).
- - Subsequent pages: one per test case, showing ASCII summary, graph image, and PASS/FAIL.
-
-Relies on outputs produced by the test scripts (summary/result/graph) and file_name.json
-to map filenames. Use python-docx to render the document.
-"""
-
 import os
 import sys
 import json
