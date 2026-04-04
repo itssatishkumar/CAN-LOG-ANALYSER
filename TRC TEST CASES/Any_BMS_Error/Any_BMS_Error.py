@@ -119,10 +119,13 @@ ERROR_SIGNALS = {
     "History_ActiveErrorGroup2": {"can_id": 0x0260, "type": "byte", "byte": 2},
 
     # Byte 3
-    "SD_Power_off_Pending": {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 0},
-    "Isolation_warning":    {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 1},
-    "Isolation_Failure":    {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 2},
-    "contactorCommandMissing" : {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 3},
+    "SD_Power_off_Pending":        {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 0},
+    "Isolation_warning":           {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 1},
+    "Isolation_Failure":           {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 2},
+    "contactorCommandMissing_LD":  {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 3},
+    "openWireDetected":            {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 4},
+    "contactorCommandMissing_CHG": {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 5},
+
 }
 INTERESTING_CAN_IDS = set(v["can_id"] for v in ERROR_SIGNALS.values())
 
