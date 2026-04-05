@@ -13,9 +13,6 @@ from docx.oxml.ns import nsdecls
 from docx.oxml.shared import OxmlElement, qn
 from docx.image.image import Image
 
-# ------------------------------------------------------------
-# CONFIG (mirrors LAUNCHER.py)
-# ------------------------------------------------------------
 TEST_CASES = [
     "SoC BEHAVIOR", "SHUTDOWN PROCESS", "PRECHARGE PROCESS",
     "BMS STATE TRANSITION", "CELL TEMP IMBALANCE", "BMS PCB TEMP",
@@ -26,7 +23,6 @@ TEST_CASES = [
     "CAPACITY CHECK", "BMS CURRENT IN READY MODE", "DRIVE_CHARGE Max Min Avg CURRENT"
 ]
 
-# Skip summary JSON for these tests (case-insensitive); still include graph/result.
 SKIP_SUMMARY_FOR = {
     "shutdown process",
     "precharge process",
@@ -76,8 +72,6 @@ def _default_output_names(script_name: str) -> Dict[str, str]:
         "summary": f"{base}_summary.json",
         "graph": f"{base}_plot.png",
     }
-
-
 # ------------------------------------------------------------
 # UTILITIES
 # ------------------------------------------------------------
@@ -103,7 +97,6 @@ def load_meta(csv_path: str) -> Dict[str, str]:
         except Exception:
             pass
 
-    # If vehicle name is missing, use selected file name from GUI as-is
     if not meta.get("VEHICLE NAME"):
         if len(sys.argv) > 1:
             meta["VEHICLE NAME"] = os.path.basename(sys.argv[1])
@@ -125,7 +118,6 @@ def meta_value(meta: Dict[str, str], key: str) -> str:
 
 
 def load_output_config(tests_folder: str) -> Dict[int, Dict[str, str]]:
-    """Read file_name.json to map result/summary/graph filenames for each test."""
     config_path = os.path.join(tests_folder, FILE_MAP_NAME)
     config_data: Dict[str, Dict[str, str]] = {}
     if os.path.exists(config_path):
@@ -148,9 +140,7 @@ def load_output_config(tests_folder: str) -> Dict[int, Dict[str, str]]:
         }
     return output_by_row
 
-
 def shade_cell(cell, color_hex: str):
-    # w:val is required for valid shading; use "clear" with a fill color.
     cell._tc.get_or_add_tcPr().append(
         parse_xml(f'<w:shd {nsdecls("w")} w:val="clear" w:color="auto" w:fill="{color_hex}"/>')
     )
@@ -344,10 +334,6 @@ def add_scaled_picture(doc: Document, path: str, max_w_in: float = MAX_GRAPH_WID
 
 
 def _trim_whitespace(path: str) -> str:
-    """
-    Remove whitespace margins from an image to avoid large blank areas in DOCX.
-    Returns path to cropped temp file, or original path on failure.
-    """
     try:
         from PIL import Image, ImageChops
 
@@ -357,7 +343,6 @@ def _trim_whitespace(path: str) -> str:
             diff = ImageChops.difference(im, bg)
             bbox = diff.getbbox()
 
-            # Stronger threshold-based bbox (treat near-white as background)
             if not bbox:
                 gray = im.convert("L")
                 mask = gray.point(lambda p: 0 if p > 250 else 255)
@@ -392,7 +377,6 @@ def add_test_page(doc: Document, idx: int, case_name: str, paths: Dict[str, str]
     trun.bold = True
     trun.font.color.rgb = RGBColor(192, 0, 0)  # red
 
-    # Graph first (trim excess whitespace for better layout)
     if os.path.exists(graph_path):
         try:
             trimmed = _trim_whitespace(graph_path)
@@ -402,7 +386,6 @@ def add_test_page(doc: Document, idx: int, case_name: str, paths: Dict[str, str]
     else:
         doc.add_paragraph(f"[Graph missing: {graph_path}]")
 
-    # Summary block (optional, after image to keep title+graph together)
     skip_summary = case_name.lower() in SKIP_SUMMARY_FOR
     if not skip_summary:
         summary_lines: List[str] = ["Summary not found."]
@@ -447,9 +430,7 @@ def build_doc(out_path: str, meta_csv: str, tests_folder: str):
     doc.save(out_path)
     print(f"Tracker DOCX saved to: {out_path}")
 
-
 if __name__ == "__main__":
-    # Usage: python Generate_Tracker.py [output_docx] [tests_folder] [meta_csv]
     out_path = sys.argv[1] if len(sys.argv) > 1 else OUTPUT_DOCX
     tests_folder = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_TESTS_FOLDER
     meta_csv = sys.argv[3] if len(sys.argv) > 3 else META_CSV
