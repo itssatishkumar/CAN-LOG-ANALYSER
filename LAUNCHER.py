@@ -1670,15 +1670,15 @@ def run_updater_first(app: QApplication):
         local_version = "1.0.0"
     except Exception:
         local_version = "1.0.0"
-
     check_for_update(local_version=local_version, app=app)
+
 
 def main():
     app = QApplication(sys.argv)
-    run_updater_first(app)
     w = CANLogDebugger()
     w.show()
-    sys.exit(app.exec())
+    QTimer.singleShot(0, lambda: run_updater_first(app))
 
+    sys.exit(app.exec())
 if __name__ == "__main__":
     main()
