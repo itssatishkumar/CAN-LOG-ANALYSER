@@ -32,9 +32,8 @@ TEST_CASES = [
 ]
 
 FW_CHECKER = "FW_Config_checker.py"
-CLEAR_OUTPUTS_ON_RUN_ALL = True  # set to False to keep previous outputs
+CLEAR_OUTPUTS_ON_RUN_ALL = True 
 
-# row -> script filename (inside a folder of the same base name)
 SCRIPT_BY_ROW: Dict[int, str] = {
     0: "SoC_behavior.py",
     1: "Shutdown_Process.py",
@@ -64,7 +63,6 @@ def _default_output_names(script_name: str) -> Dict[str, str]:
         "graph": f"{base}_plot.png",
     }
 
-# Allow scripts ~4.5 seconds (9 * 0.5s) to persist their JSON outputs
 RESULT_POLL_ATTEMPTS = 9
 RESULT_POLL_DELAY_MS = 500
 
@@ -495,12 +493,6 @@ class CANLogDebugger(QWidget):
         # ---------------------------------------------------
         # RIGHT TABLE PANEL
         # ---------------------------------------------------
-        # Columns:
-        # 0 = TEST CASE (with per-test RUN button)
-        # 1 = STATUS
-        # 2 = View Results
-        # 3 = View Graph
-        # 4 = Result (PASS/FAIL)
         table = QTableWidget(len(TEST_CASES), 5)
         table.setHorizontalHeaderLabels(
             ["TEST CASE", "STATUS", "View Results", "View Graph", "Result"]
@@ -738,10 +730,6 @@ class CANLogDebugger(QWidget):
             self.result_refresh_timer.stop()
 
     def _maybe_finish_run_all(self):
-        """
-        Re-enable the RUN ALL button only after all processes have stopped
-        and pending result rows have been consumed.
-        """
         if not self.processes:
             return
         if any(p.state() != QProcess.NotRunning for p in self.processes.values()):
@@ -772,11 +760,6 @@ class CANLogDebugger(QWidget):
         item.setFont(font)
 
     def _get_test_script_paths(self, row: int):
-        """
-        Returns (folder_path, script_path) for a given row.
-        Folder name is assumed to be base name of script.
-        E.g. SoC_behavior.py -> TRC TEST CASES/SoC_behavior/SoC_behavior.py
-        """
         script_name = SCRIPT_BY_ROW.get(row)
         if not script_name:
             return None, None
@@ -1123,7 +1106,6 @@ class CANLogDebugger(QWidget):
             except Exception:
                 return f"{val} km" if val else ""
 
-        # Prefer new keyed distance; fallback if older key used
         dist_val = info.get("DISTANCE_COVERED_KM", info.get("DISTANCE_COVERED", ""))
         self.tx_distance.setText(_fmt_dist(dist_val))
 
@@ -1247,7 +1229,6 @@ class CANLogDebugger(QWidget):
             )
             return
 
-        # Clear previously generated outputs before running everything (configurable)
         if CLEAR_OUTPUTS_ON_RUN_ALL:
             self._clear_all_outputs()
 
@@ -1258,8 +1239,6 @@ class CANLogDebugger(QWidget):
 
         self.pending_result_rows.clear()
         self._ensure_result_timer_running()
-
-        # Reset status and result columns
         for i in range(len(TEST_CASES)):
             status_item = QTableWidgetItem("Not Run")
             status_item.setTextAlignment(Qt.AlignCenter)
@@ -1284,14 +1263,10 @@ class CANLogDebugger(QWidget):
 
             self.pending_result_rows.add(row)
             self._ensure_result_timer_running()
-
-            # Mark as running
             self._mark_row_running(row)
 
             proc = QProcess(self)
             proc.setWorkingDirectory(folder_path)
-
-            # Capture row in lambda default
             proc.finished.connect(lambda exitCode, _status, r=row: self.on_test_finished(r, exitCode))
             proc.errorOccurred.connect(lambda _e, r=row: self.on_test_error(r))
             proc.readyReadStandardOutput.connect(lambda r=row: self._on_test_stdout(r))
@@ -1299,7 +1274,6 @@ class CANLogDebugger(QWidget):
             proc.start(python, [script, self.selected_file_path])
             self.processes[row] = proc
 
-        # Edge case: if nothing started, reset button immediately
         if not self.processes:
             self.run_all_btn.setEnabled(True)
             self.run_all_btn.setText("RUN ALL TEST CASES")
@@ -1315,18 +1289,13 @@ class CANLogDebugger(QWidget):
             QMessageBox.warning(self, "Error", "Browse a file first")
             return
 
-        # Prevent re-running if this row is already in progress
         proc = self.processes.get(row)
         if proc and proc.state() != QProcess.NotRunning:
             QMessageBox.information(self, "Info", "This test is already running.")
             return
-
-        # Optionally clear previous outputs for ALL tests, so every run (even single)
-        # starts with a clean set of result/summary/graph files.
         if CLEAR_OUTPUTS_ON_RUN_ALL:
             self._clear_all_outputs()
 
-        # Reset status/result cells for this row
         status_item = QTableWidgetItem("Not Run")
         status_item.setTextAlignment(Qt.AlignCenter)
         self.test_table.setItem(row, 1, status_item)
@@ -1341,11 +1310,9 @@ class CANLogDebugger(QWidget):
 
         python = sys.executable
 
-        # Track as pending so the result cell updates automatically
         self.pending_result_rows.add(row)
         self._ensure_result_timer_running()
 
-        # Reset row-specific running state and mark as running
         self.running_rows.discard(row)
         self.running_started_at.pop(row, None)
         self.running_pct.pop(row, None)
@@ -1366,9 +1333,7 @@ class CANLogDebugger(QWidget):
         self.running_started_at.pop(row, None)
         self.running_pct.pop(row, None)
         if exitCode == 0:
-            # Completed OK
             self._set_colored_cell(row, 1, "Completed", "#28A745")
-            # Try to update PASS/FAIL for this row
             if not self.update_result_cell(row):
                 self._schedule_result_update(row)
         else:
@@ -1414,11 +1379,9 @@ class CANLogDebugger(QWidget):
                 updated = True
 
         if updated:
-            # Apply immediate text refresh; background animation updates on its own timer
             self._set_running_visual(row, getattr(self, "title_anim_step", 0) / 100.0)
 
     def _mark_result_missing(self, row: int, reason: Optional[str] = None):
-        # Give one last chance in case the JSON appeared after the retries elapsed.
         if self.update_result_cell(row):
             return
 
@@ -1468,7 +1431,6 @@ class CANLogDebugger(QWidget):
             )
             success = True
         elif result_str == "WARNING":
-            # Show WARNING as an in-between state (amber color)
             self._set_colored_cell(
                 row, 4, "WARNING", "#FFA500", align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip
             )
@@ -1510,7 +1472,6 @@ class CANLogDebugger(QWidget):
     # VIEW RESULT / GRAPH
     # ======================================================
     def on_view_results(self, idx):
-        # Refresh PASS/FAIL manually whenever the user opens the viewer.
         self.update_result_cell(idx)
 
         summary_path = self._get_output_file_path(idx, "summary")
@@ -1529,7 +1490,6 @@ class CANLogDebugger(QWidget):
             QMessageBox.information(self, "Info", f"File not found:\n{graph_path}")
             return
 
-        # Prefer Microsoft Office Picture Manager if installed; fallback to default handler
         candidate_viewers = [
             r"C:\Program Files (x86)\Microsoft Office\Office12\OIS.EXE",
             r"C:\Program Files\Microsoft Office\Office12\OIS.EXE",
@@ -1543,7 +1503,7 @@ class CANLogDebugger(QWidget):
                     pass
 
         try:
-            os.startfile(graph_path)  # type: ignore[attr-defined]
+            os.startfile(graph_path)
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to open graph:\n{e}")
 
@@ -1597,7 +1557,6 @@ class CANLogDebugger(QWidget):
         generator_script = os.path.join(self.script_dir, "Generate_Tracker.py")
 
         meta_payload = {
-            # Vehicle / file name shown at top of tracker
             "VEHICLE NAME": os.path.basename(self.selected_file_path),
             "BMS HW VERSION": self.tx_hw.text(),
             "BMS FIRMWARE": self.tx_fw.text(),
@@ -1638,7 +1597,6 @@ class CANLogDebugger(QWidget):
             QMessageBox.warning(self, "Tracker", err_msg)
             return
 
-        # Ask user if they want to open the generated report
         reply = QMessageBox.question(
             self,
             "Tracker",
@@ -1650,7 +1608,7 @@ class CANLogDebugger(QWidget):
         if reply == QMessageBox.Yes:
             try:
                 if sys.platform.startswith("win"):
-                    os.startfile(docx_path)  # type: ignore[attr-defined]
+                    os.startfile(docx_path)
                 elif sys.platform == "darwin":
                     subprocess.Popen(["open", docx_path])
                 else:
@@ -1671,7 +1629,6 @@ def run_updater_first(app: QApplication):
     except Exception:
         local_version = "1.0.0"
     check_for_update(local_version=local_version, app=app)
-
 
 def main():
     app = QApplication(sys.argv)
