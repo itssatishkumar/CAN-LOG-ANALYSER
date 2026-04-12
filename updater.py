@@ -16,29 +16,11 @@ BRANCH = "main"
 RAW_VERSION_URL = f"https://raw.githubusercontent.com/{REPO_USER}/{REPO_NAME}/{BRANCH}/version.txt"
 API_ROOT_URL = f"https://api.github.com/repos/{REPO_USER}/{REPO_NAME}/contents"
 
-DEFAULT_LOCAL_VERSION = "1.0.0"
-
-
-# -------------------------------------------------------
-# LOAD TOKEN (SAFE)
-# -------------------------------------------------------
-def load_token():
-    # 1. Try environment variable
-    token = os.getenv("GITHUB_TOKEN")
-    if token:
-        return token
-
-    # 2. Try local file (ignored in git)
-    token_file = "GITHUB_TOKEN.txt"
-    if os.path.exists(token_file):
-        with open(token_file, "r") as f:
-            return f.read().strip()
-
-    return None
-
-
-GITHUB_TOKEN = load_token()
+# 🔥 PUT YOUR TOKEN HERE (READ-ONLY)
+GITHUB_TOKEN = "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"
 HEADERS = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
+
+DEFAULT_LOCAL_VERSION = "1.0.0"
 
 
 # -------------------------------------------------------
@@ -106,7 +88,7 @@ def is_running_as_exe():
 
 
 # -------------------------------------------------------
-# SYNC
+# SYNC GITHUB
 # -------------------------------------------------------
 def sync_folder(api_url, local_path, progress):
     r = safe_request(api_url)
@@ -148,10 +130,12 @@ def check_for_update(local_version, app):
     if not online_version:
         return
 
+    # ✅ NO UPDATE
     if online_version == local_version:
         print("Already up to date")
         return
 
+    # 🔥 ASK USER
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Question)
     msg.setWindowTitle("Update Available")
@@ -165,7 +149,7 @@ def check_for_update(local_version, app):
 
     target_folder = os.path.dirname(os.path.abspath(sys.argv[0]))
 
-    # EXE MODE
+    # ---------------- EXE MODE ----------------
     if is_running_as_exe():
         exe_url_file = f"https://raw.githubusercontent.com/{REPO_USER}/{REPO_NAME}/{BRANCH}/appversion.txt"
         exe_download_url = get_text(exe_url_file)
@@ -188,7 +172,7 @@ def check_for_update(local_version, app):
         subprocess.Popen([updater_path, sys.argv[0], new_exe_path], shell=True)
         sys.exit(0)
 
-    # PYTHON MODE
+    # ---------------- PYTHON MODE ----------------
     progress = QProgressDialog("Updating...", "Cancel", 0, 0)
     progress.setWindowModality(Qt.ApplicationModal)
     progress.show()
@@ -197,6 +181,7 @@ def check_for_update(local_version, app):
         QMessageBox.warning(None, "Update Failed", "Update failed.")
         return
 
+    # Save version
     with open(os.path.join(target_folder, "version.txt"), "w") as f:
         f.write(online_version)
 
