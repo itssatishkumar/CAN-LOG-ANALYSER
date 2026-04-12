@@ -2,11 +2,12 @@ import os
 import sys
 import requests
 import subprocess
+import time
 from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 from PySide6.QtCore import Qt
 
 # -------------------------------------------------------
-# GITHUB REPO CONFIG
+# CONFIG
 # -------------------------------------------------------
 REPO_USER = "itssatishkumar"
 REPO_NAME = "CAN-LOG-ANALYSER"
@@ -14,104 +15,87 @@ BRANCH = "main"
 
 RAW_VERSION_URL = f"https://raw.githubusercontent.com/{REPO_USER}/{REPO_NAME}/{BRANCH}/version.txt"
 API_ROOT_URL = f"https://api.github.com/repos/{REPO_USER}/{REPO_NAME}/contents"
+
 DEFAULT_LOCAL_VERSION = "1.0.0"
 
 
 # -------------------------------------------------------
-# LOAD TOKEN
+# LOAD TOKEN (SAFE)
 # -------------------------------------------------------
 def load_token():
+    # 1. Try environment variable
+    token = os.getenv("GITHUB_TOKEN")
+    if token:
+        return token
+
+    # 2. Try local file (ignored in git)
     token_file = "GITHUB_TOKEN.txt"
     if os.path.exists(token_file):
         with open(token_file, "r") as f:
             return f.read().strip()
+
     return None
 
 
 GITHUB_TOKEN = load_token()
-HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
+HEADERS = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
+
+
+# -------------------------------------------------------
+# SAFE REQUEST (RETRY)
+# -------------------------------------------------------
+def safe_request(url, stream=False, timeout=15, retries=3):
+    for _ in range(retries):
+        try:
+            r = requests.get(url, headers=HEADERS, stream=stream, timeout=timeout)
+            if r.status_code == 200:
+                return r
+        except:
+            time.sleep(2)
+    return None
 
 
 # -------------------------------------------------------
 # LOCAL VERSION
 # -------------------------------------------------------
 def read_local_version(default=DEFAULT_LOCAL_VERSION):
-    version_path = os.path.join(os.path.dirname(sys.argv[0]), "version.txt")
     try:
-        with open(version_path, "r") as f:
-            version = f.read().strip()
-            print("LOCAL VERSION:", version)
-            return version or default
-    except Exception:
-        print("Using default version:", default)
+        with open(os.path.join(os.path.dirname(sys.argv[0]), "version.txt"), "r") as f:
+            return f.read().strip() or default
+    except:
         return default
 
 
 # -------------------------------------------------------
-# FETCH FROM GITHUB
+# FETCH TEXT
 # -------------------------------------------------------
-def get_text_file_content(url):
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=10)
-        print("Fetching:", url, "| Status:", r.status_code)
-
-        if r.status_code == 200:
-            return r.text.strip()
-        else:
-            print("GitHub error:", r.text)
-            return None
-    except Exception as e:
-        print("Error fetching:", e)
-        return None
+def get_text(url):
+    r = safe_request(url)
+    if r:
+        return r.text.strip()
+    return None
 
 
 # -------------------------------------------------------
 # DOWNLOAD FILE
 # -------------------------------------------------------
-def download_file(url, target_path, parent=None):
+def download_file(url, target_path, progress):
     if not url:
-        print("Skipping file (no URL):", target_path)
         return True
 
-    try:
-        print("Downloading:", url)
-
-        r = requests.get(url, headers=HEADERS, stream=True, timeout=20)
-        r.raise_for_status()
-
-        total = int(r.headers.get("content-length", 0))
-
-        progress = QProgressDialog(
-            f"Downloading {os.path.basename(target_path)}...",
-            "Cancel", 0, total if total > 0 else 0, parent
-        )
-        progress.setWindowModality(Qt.ApplicationModal)
-        progress.setWindowTitle("Updating...")
-        progress.show()
-
-        downloaded = 0
-
-        with open(target_path, "wb") as f:
-            for chunk in r.iter_content(8192):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-
-                    if total > 0:
-                        progress.setValue(downloaded)
-
-                    QApplication.processEvents()
-
-                    if progress.wasCanceled():
-                        print("Download cancelled")
-                        return False
-
-        progress.close()
-        return True
-
-    except Exception as e:
-        print("Download failed:", e)
+    r = safe_request(url, stream=True)
+    if not r:
         return False
+
+    with open(target_path, "wb") as f:
+        for chunk in r.iter_content(8192):
+            if chunk:
+                f.write(chunk)
+                QApplication.processEvents()
+                if progress.wasCanceled():
+                    return False
+
+    return True
 
 
 # -------------------------------------------------------
@@ -122,91 +106,69 @@ def is_running_as_exe():
 
 
 # -------------------------------------------------------
-# SYNC GITHUB FOLDER
+# SYNC
 # -------------------------------------------------------
-def sync_github_folder(api_url, local_path, progress):
-    try:
-        r = requests.get(api_url, headers=HEADERS, timeout=20)
-        print("Fetching folder:", api_url, "| Status:", r.status_code)
-
-        if r.status_code != 200:
-            print("GitHub API error:", r.text)
-            return False
-
-        items = r.json()
-
-    except Exception as e:
-        QMessageBox.warning(None, "Update Failed", f"Error:\n{e}")
+def sync_folder(api_url, local_path, progress):
+    r = safe_request(api_url)
+    if not r:
         return False
 
+    items = r.json()
     os.makedirs(local_path, exist_ok=True)
 
     for item in items:
         name = item["name"]
-        item_type = item["type"]
 
         if name == "__pycache__":
             continue
 
         local_item_path = os.path.join(local_path, name)
 
-        print("Processing:", name, "| Type:", item_type)
+        progress.setLabelText(f"Updating: {name}")
+        QApplication.processEvents()
 
-        if item_type == "file":
-            download_url = item.get("download_url")
-
-            progress.setLabelText(f"Downloading: {name}")
-            QApplication.processEvents()
-
-            if not download_file(download_url, local_item_path):
+        if item["type"] == "file":
+            if not download_file(item.get("download_url"), local_item_path, progress):
                 return False
 
-        elif item_type == "dir":
-            if not sync_github_folder(item["url"], local_item_path, progress):
+        elif item["type"] == "dir":
+            if not sync_folder(item["url"], local_item_path, progress):
                 return False
 
     return True
 
 
 # -------------------------------------------------------
-# UPDATE FUNCTION (FIXED DIALOG)
+# MAIN UPDATE FUNCTION
 # -------------------------------------------------------
-def check_for_update(local_version, app, force=False):
+def check_for_update(local_version, app):
 
-    online_version = get_text_file_content(RAW_VERSION_URL)
-    print("ONLINE VERSION:", online_version)
+    online_version = get_text(RAW_VERSION_URL)
 
     if not online_version:
-        QMessageBox.warning(None, "Update Error", "Failed to fetch version.")
         return
 
-    if online_version == local_version and not force:
+    if online_version == local_version:
         print("Already up to date")
         return
-
-    print("Showing update dialog...")
 
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Question)
     msg.setWindowTitle("Update Available")
     msg.setText(f"New version ({online_version}) available.\n\nUpdate now?")
     msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-    msg.setWindowModality(Qt.ApplicationModal)
 
-    reply = msg.exec()
-
-    if reply != QMessageBox.Yes:
-        print("User cancelled update")
+    if msg.exec() != QMessageBox.Yes:
         return
+
+    print("Updating...")
 
     target_folder = os.path.dirname(os.path.abspath(sys.argv[0]))
 
-    # ---------------- EXE MODE ----------------
+    # EXE MODE
     if is_running_as_exe():
-        print("Running in EXE mode")
-
         exe_url_file = f"https://raw.githubusercontent.com/{REPO_USER}/{REPO_NAME}/{BRANCH}/appversion.txt"
-        exe_download_url = get_text_file_content(exe_url_file)
+        exe_download_url = get_text(exe_url_file)
 
         if not exe_download_url:
             QMessageBox.warning(None, "Update Failed", "No EXE URL.")
@@ -215,25 +177,26 @@ def check_for_update(local_version, app, force=False):
         new_exe_path = os.path.join(target_folder, "UPDATED_APP.exe")
         updater_path = os.path.join(target_folder, "updater.exe")
 
-        if not download_file(exe_download_url, new_exe_path):
+        progress = QProgressDialog("Downloading update...", "Cancel", 0, 0)
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.show()
+
+        if not download_file(exe_download_url, new_exe_path, progress):
+            QMessageBox.warning(None, "Update Failed", "Download failed.")
             return
 
         subprocess.Popen([updater_path, sys.argv[0], new_exe_path], shell=True)
         sys.exit(0)
 
-    # ---------------- PYTHON MODE ----------------
-    print("Running in PYTHON mode")
-
+    # PYTHON MODE
     progress = QProgressDialog("Updating...", "Cancel", 0, 0)
-    progress.setWindowTitle("Updating...")
     progress.setWindowModality(Qt.ApplicationModal)
     progress.show()
 
-    if not sync_github_folder(API_ROOT_URL, target_folder, progress):
-        QMessageBox.warning(None, "Update Failed", "Update incomplete.")
+    if not sync_folder(API_ROOT_URL, target_folder, progress):
+        QMessageBox.warning(None, "Update Failed", "Update failed.")
         return
 
-    # Save version
     with open(os.path.join(target_folder, "version.txt"), "w") as f:
         f.write(online_version)
 
@@ -244,7 +207,7 @@ def check_for_update(local_version, app, force=False):
 
 
 # -------------------------------------------------------
-# RUN (FIXED EVENT LOOP)
+# RUN
 # -------------------------------------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
