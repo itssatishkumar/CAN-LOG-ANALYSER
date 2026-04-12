@@ -16,6 +16,7 @@ RAW_VERSION_URL = f"https://raw.githubusercontent.com/{REPO_USER}/{REPO_NAME}/{B
 API_ROOT_URL = f"https://api.github.com/repos/{REPO_USER}/{REPO_NAME}/contents"
 DEFAULT_LOCAL_VERSION = "1.0.0"
 
+
 # -------------------------------------------------------
 # LOAD GITHUB TOKEN (Important for avoiding API limits)
 # -------------------------------------------------------
@@ -31,6 +32,10 @@ GITHUB_TOKEN = load_token()
 # HTTP headers for GitHub API
 HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
 
+
+# -------------------------------------------------------
+# HELPER: Read local version file
+# -------------------------------------------------------
 def read_local_version(default=DEFAULT_LOCAL_VERSION):
     version_path = os.path.join(os.path.dirname(__file__), "version.txt")
     try:
@@ -41,6 +46,10 @@ def read_local_version(default=DEFAULT_LOCAL_VERSION):
     except Exception:
         return default
 
+
+# -------------------------------------------------------
+# HELPER: Fetch plain text from GitHub
+# -------------------------------------------------------
 def get_text_file_content(url):
     try:
         r = requests.get(url, headers=HEADERS, timeout=10)
@@ -50,6 +59,10 @@ def get_text_file_content(url):
         print(f"Error fetching {url}: {e}")
         return None
 
+
+# -------------------------------------------------------
+# HELPER: Download a file with progress bar
+# -------------------------------------------------------
 def download_file(url, target_path, parent=None):
     try:
         r = requests.get(url, headers=HEADERS, stream=True, timeout=20)
@@ -88,9 +101,19 @@ def download_file(url, target_path, parent=None):
     except Exception as e:
         print(f"Download failed: {e}")
         return False
+
+
+# -------------------------------------------------------
+# HELPER: Running as EXE?
+# -------------------------------------------------------
 def is_running_as_exe():
     _, ext = os.path.splitext(sys.argv[0])
     return ext.lower() == ".exe"
+
+
+# -------------------------------------------------------
+# RECURSIVE GITHUB FOLDER SYNC (DOWNLOADING EVERYTHING)
+# -------------------------------------------------------
 def sync_github_folder(api_url, local_path, progress):
     try:
         r = requests.get(api_url, headers=HEADERS, timeout=20)
@@ -110,6 +133,7 @@ def sync_github_folder(api_url, local_path, progress):
         next_api_url = item["url"]
         local_item_path = os.path.join(local_path, name)
 
+        # Skip unwanted folders
         if name == "__pycache__":
             continue
 
@@ -126,6 +150,7 @@ def sync_github_folder(api_url, local_path, progress):
                 return False
 
     return True
+
 
 # -------------------------------------------------------
 # MAIN UPDATE FUNCTION
@@ -183,12 +208,16 @@ def check_for_update(local_version, app):
         QMessageBox.warning(parent, "Update Failed", "Some files could not be updated.")
         return
 
+    # Save version
     with open(os.path.join(target_folder, "version.txt"), "w") as vf:
         vf.write(online_version)
+
     progress.close()
 
     QMessageBox.information(parent, "Update Complete", "Update installed.\nPlease restart application.")
     sys.exit(0)
+
+
 # -------------------------------------------------------
 # RUN DIRECTLY
 # -------------------------------------------------------
