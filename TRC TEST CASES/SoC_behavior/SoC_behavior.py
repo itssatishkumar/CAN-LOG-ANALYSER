@@ -191,7 +191,7 @@ curr_soc = soc_arr[max_delta_idx + 1]
 idx = max_delta_idx
 
 
-def detect_soc_stuck_odo(df, odo_events, min_km=3.0, max_soc_delta=1.0, max_odo_gap_ms=3000):
+def detect_soc_stuck_odo(df, odo_events, min_km=4.0, max_soc_delta=1.0, max_odo_gap_ms=3000):
     if len(odo_events) < 2:
         return False, None, None
 
