@@ -244,9 +244,6 @@ def parse_trc_file(filepath: str):
             start_str = m.group(1).strip()
             break
 
-    if start_str is None:
-        raise ValueError(f"Missing 'Start time:' in {filepath}")
-
     frames_raw = []
     for ln in lines:
         m = RE_FRAME.match(ln)
@@ -264,35 +261,12 @@ def parse_trc_file(filepath: str):
 
     if not frames_raw:
         raise ValueError(f"No frames found in {filepath}")
+    if start_sec is not None:
+        start_dt = _excel_serial_to_datetime(start_sec)
+    else:
+        raise ValueError(f"Missing $STARTTIME in {filepath}")
 
     # Use $STARTTIME because it is locale-independent
-    start_dt_excel = None
-    start_dt_text = None
-
-    if start_sec is not None:
-        try:
-            start_dt_excel = _excel_serial_to_datetime(start_sec)
-        except:
-            pass
-
-    if start_str is not None:
-        try:
-            start_dt_text = _parse_start_datetime(start_str)
-        except:
-            pass
-
-    if start_dt_excel and start_dt_text:
-        diff = abs((start_dt_excel - start_dt_text).total_seconds())
-        if diff < 5:
-            start_dt = start_dt_excel
-        else:
-            start_dt = start_dt_text
-    elif start_dt_text:
-        start_dt = start_dt_text
-    elif start_dt_excel:
-        start_dt = start_dt_excel
-    else:
-        raise ValueError(f"No valid start time in {filepath}")
     if not (2010 <= start_dt.year <= 2100):
         raise ValueError(f"Invalid start year: {start_dt} in {filepath}")
 
@@ -304,7 +278,7 @@ def parse_trc_file(filepath: str):
         delta_ms = offset - offset_base
         delta_us = int(round(delta_ms * 1000.0))
         actual_dt = start_dt + timedelta(microseconds=delta_us)
-        frames.append((actual_dt, ftype, canid, dlc, data))
+        frames.append((actual_dt, len(frames), ftype, canid, dlc, data))
 
     return start_sec, start_str, start_dt, frames
 
@@ -341,7 +315,7 @@ def merge_trcs(filepaths):
     for _st, _st_str, _st_dt, frames in unique:
         merged_all.extend(frames)
 
-    merged_all.sort(key=lambda x: (x[0], x[2]))
+    merged_all.sort(key=lambda x: (x[0], x[1]))
 
     base_start_sec = unique[0][2].timestamp() / 86400 + 25569
     base_start_str = unique[0][1]
@@ -351,7 +325,7 @@ def merge_trcs(filepaths):
     out.append(";$FILEVERSION=1.1")
     out.append(f";$STARTTIME={base_start_sec}")
     out.append(";")
-    out.append(f";   Start time: {base_start_str}")
+    out.append(f";   Start time: {_format_timestamp(earliest_dt)}")
     out.append(";   Merged TRC (with corrected timestamp logic)")
     out.append(";")
     out.append(";   Message Number")
@@ -362,7 +336,7 @@ def merge_trcs(filepaths):
     out.append(";---+--   ----+----  --+--  ----+---  +  -+ -- -- -- -- -- -- --")
 
     msgnum = 1
-    for ts, ftype, canid, dlc, data in merged_all:
+    for ts, _, ftype, canid, dlc, data in merged_all:
         ts_str = _format_timestamp(ts)
         canid_formatted = f"{int(canid, 16):04X}"
         line = f"{msgnum:>6})  {ts_str}  {ftype:<7} {canid_formatted}  {dlc}  {data}"
