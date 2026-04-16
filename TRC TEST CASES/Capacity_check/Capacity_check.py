@@ -358,7 +358,7 @@ def parse_trc(fp, progress_cb=None):
                     hi = int(d[1], 16)
                     raw = lo | (hi << 8)
                     soc = raw * 0.01
-                    soc_list.append((ts, soc)) 
+                    soc_list.append((ts, soc, bms_state))
                     
                 if len(d) >= 8:
                     v_lo = int(d[6], 16)
@@ -468,20 +468,21 @@ def build_charge_sessions(events, default_end=None):
 # =========================================================
 def lookup_before(ts, data):
     best = None
-    for t, v in data:
+    for item in data:
+        t = item[0]
         if t <= ts:
-            best = (t, v)
+            best = item
         else:
             break
     return best
 
 
 def lookup_after(ts, data):
-    for t, v in data:
+    for item in data:
+        t = item[0]
         if t >= ts:
-            return (t, v)
+            return item
     return None
-
 
 # =========================================================
 #  FIXED: EXACT/STEP SoC TIMESTAMP SELECTION (0.01% resolution)
@@ -497,7 +498,7 @@ def find_soc_ts(soc_list, target, start_ts, end_ts, reverse=False, tol=0.15):
     data = reversed(soc_list) if reverse else soc_list
 
     # Pass 1: exact target match
-    for ts, soc in data:
+    for ts, soc, _ in data:
         if ts < start_ts or ts > end_ts:
             continue
         if abs(soc - target) <= EPS:
@@ -505,7 +506,7 @@ def find_soc_ts(soc_list, target, start_ts, end_ts, reverse=False, tol=0.15):
 
     # Pass 2: nearest below target (max soc < target)
     data = reversed(soc_list) if reverse else soc_list
-    for ts, soc in data:
+    for ts, soc, _ in data:
         if ts < start_ts or ts > end_ts:
             continue
         if soc < target - EPS:
@@ -627,7 +628,7 @@ def get_uv_end_soc(soc_list, uv_ts):
         return None
 
     idx = None
-    for i, (t, v) in enumerate(soc_list):
+    for i, (t, v, _) in enumerate(soc_list):
         if t >= uv_ts:
             idx = i
             break
@@ -719,7 +720,7 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, therm_sam
     if uv_ts and soc_list:
         uv_end_soc = get_uv_end_soc(soc_list, uv_ts)
 
-    ts_all = [t for t, _ in soc_list]
+    ts_all = [t for t, _, _ in soc_list]
     t_start = ts_all[0]
     t_end = ts_all[-1]
 
@@ -913,11 +914,20 @@ def build_windows(soc_list, current_list, odo_list, ntc_list, uv_list, therm_sam
     # ---------------------------------------------------------
     uv_detected = uv_ts is not None
     low_soc_start_ts = None
+    streak = 0
+    candidate_ts = None
 
-    for ts, soc in soc_list:
-        if soc <= 1.0:
-            low_soc_start_ts = ts
-            break
+    for ts, soc, bms in soc_list:
+        if soc <= 1.0 and bms != 0:
+            streak += 1
+            if streak == 1:
+                candidate_ts = ts
+            if streak >= 5:
+                low_soc_start_ts = candidate_ts
+                break
+        else:
+            streak = 0
+            candidate_ts = None
 
     low_soc_found = low_soc_start_ts is not None
     dist_after_low_soc = None
