@@ -40,17 +40,31 @@ def s8(b):
     return struct.unpack("b", bytes([b]))[0]
 
 # -----------------------------------------------------
-# GET TRC FILE
+# GET TRC FILE (with picker fallback)
 # -----------------------------------------------------
-if len(sys.argv) < 2:
-    print("ERROR: No TRC file passed from GUI!")
-    sys.exit(1)
+from tkinter import Tk, filedialog
 
-trc_path = sys.argv[1]
+if len(sys.argv) < 2 or not sys.argv[1].strip():
+    print("No TRC file passed from GUI. Please select a file...")
+
+    Tk().withdraw()  # Hide root window
+    trc_path = filedialog.askopenfilename(
+        title="Select TRC file",
+        filetypes=[("TRC files", "*.trc"), ("All files", "*.*")]
+    )
+
+    if not trc_path:
+        print("ERROR: No TRC file selected!")
+        sys.exit(1)
+else:
+    trc_path = sys.argv[1]
+
+# Validate file existence
 if not os.path.exists(trc_path):
     print(f"ERROR: TRC file not found: {trc_path}")
     sys.exit(1)
 
+# Continue as before
 folder = os.path.dirname(os.path.abspath(__file__))
 print(f"Using TRC file: {trc_path}")
 emit_progress = progress_by_bytes(trc_path, step=PROGRESS_STEP)
@@ -74,10 +88,15 @@ first_ts = None
 # -----------------------------------------------------
 # Additional CAN ID 0x014E parameters
 # -----------------------------------------------------
-reported_max = None
-reported_min = None
-reported_delta = None
-bms_state = 0
+reported_max_vals = []
+reported_min_vals = []
+reported_delta_vals = []
+reported_ts_list = []
+bms_state_list = []
+last_bms_state = 0
+ignore_014E = False
+prev_bms_state = 0
+pending_014E = None
 # -----------------------------------------------------
 # PARSE TRC
 # -----------------------------------------------------
@@ -112,12 +131,23 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         # CAN ID 0x014E - Reported delta/min/max from BMS
         # -----------------------------------------------------
         if can_id == 0x014E and dlc >= 3:
-            reported_max = s8(data[0])
-            reported_min = s8(data[1])
-            reported_delta = s8(data[2])
-        if can_id == 0x109 and dlc >= 5:
-            bms_state = data[4]
+            if pending_014E is None:
+                pending_014E = []
+            pending_014E.append((s8(data[0]), s8(data[1]), s8(data[2]), ts_string))
 
+        if can_id == 0x109 and dlc >= 5:
+            prev_bms_state = last_bms_state
+            last_bms_state = data[4]
+
+            if pending_014E:
+                if prev_bms_state != 0 and last_bms_state != 0:
+                    for max_v, min_v, delta_v, ts_v in pending_014E:
+                        reported_max_vals.append(max_v)
+                        reported_min_vals.append(min_v)
+                        reported_delta_vals.append(delta_v)
+                        reported_ts_list.append(ts_v)
+
+                pending_014E = None
         # -----------------------------------------------------
         # Temperature CAN frames
         # -----------------------------------------------------
@@ -126,8 +156,6 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
             if can_id == msg_id:
 
                 found = True
-                temp_arr = current_temps
-
                 # Base index mapping
                 if group_id == 1:
                     base = 0
@@ -148,11 +176,14 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
                 elif group_id == 9:
                     base = 62
 
+                # -------- UPDATE GLOBAL ARRAY --------
                 for i, bidx in enumerate(byte_idxs):
                     idx = base + i
                     if bidx < dlc and idx < 64:
-                        temp_arr[idx] = s8(data[bidx])
+                        current_temps[idx] = s8(data[bidx])
 
+                # -------- COPY SNAPSHOT --------
+                temp_arr = current_temps.copy()
 
                 break
 
@@ -162,36 +193,34 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         timestamps.append(ts_ms)
         temps_list.append(temp_arr.copy())
         full_ts_list.append(ts_string)
-
+        bms_state_list.append(last_bms_state)
         if ts_ms - first_ts <= 10000:
-            raw_first_10s.append(temp_arr)
+            raw_first_10s.append(temp_arr.copy())
 
 # -----------------------------------------------------
 # ACTIVE NTC DETECTION
 # -----------------------------------------------------
 active_ntc = set()
-for arr in raw_first_10s:
+for arr in temps_list:
     for i, v in enumerate(arr):
         if isinstance(v, int) and v != 0:
             active_ntc.add(i)
 
-active_ntc = sorted(list(active_ntc))
-
+active_ntc = sorted(active_ntc)
 if not active_ntc:
-    print("ERROR: No active NTC detected in first 10 seconds!")
+    print("ERROR: No active NTC found in entire log!")
     sys.exit(1)
+active_ntc_names = [f"ExtTherm_{idx+1}" for idx in active_ntc]
 
-active_ntc_names = []
-for idx in active_ntc:
-    active_ntc_names.append(f"ExtTherm_{idx+1}")
 # -----------------------------------------------------
 # BUILD DF
 # -----------------------------------------------------
 df = pd.DataFrame({
     "ts": timestamps,
     "temps": temps_list,
-    "full_ts": full_ts_list
-}).sort_values("ts").reset_index(drop=True)
+    "full_ts": full_ts_list,
+    "bms_state": bms_state_list
+})
 
 # -----------------------------------------------------
 # MAIN IMBALANCE ANALYSIS
@@ -219,11 +248,16 @@ for i in range(1, len(df)):
     # Zero streak rule
     for ntc_idx in active_ntc:
         val = arr[ntc_idx]
-        if val is None:
-            continue
 
-        if val == 0 and bms_state != 0:
-            continue
+        if val is None:
+            temps_valid = False
+            active_vals = []
+            break
+
+        if val == 0 and curr.bms_state == 0:
+            temps_valid = False
+            active_vals = []
+            break
 
         if val == 0:
             zero_streak[ntc_idx] += 1
@@ -231,6 +265,7 @@ for i in range(1, len(df)):
                 temps_valid = False
         else:
             zero_streak[ntc_idx] = 0
+
         active_vals.append(val)
 
     if not temps_valid or not active_vals:
@@ -245,7 +280,9 @@ for i in range(1, len(df)):
         max_imbalance_ts = curr.full_ts
 
     # Outlier detection
-    median_val = sorted(active_vals)[len(active_vals)//2]
+    vals_sorted = sorted(active_vals)
+    n = len(vals_sorted)
+    median_val = (vals_sorted[n//2 - 1] + vals_sorted[n//2]) / 2 if n % 2 == 0 else vals_sorted[n//2]
     deviations = [abs(v - median_val) for v in active_vals]
     max_dev_index = deviations.index(max(deviations))
     outlier_idx = active_ntc[max_dev_index]
@@ -264,11 +301,34 @@ for i in range(1, len(df)):
             "Timestamp": curr.full_ts,
             "Imbalance": round(imbalance, 3)
         })
-
 # -----------------------------------------------------
 # OVERALL RESULT
 # -----------------------------------------------------
 overall_result = "FAIL" if fails else "PASS"
+
+if reported_max_vals:
+    idx_max = reported_max_vals.index(max(reported_max_vals))
+    reported_max = reported_max_vals[idx_max]
+    reported_max_ts = reported_ts_list[idx_max]
+else:
+    reported_max = None
+    reported_max_ts = None
+
+if reported_min_vals:
+    idx_min = reported_min_vals.index(min(reported_min_vals))
+    reported_min = reported_min_vals[idx_min]
+    reported_min_ts = reported_ts_list[idx_min]
+else:
+    reported_min = None
+    reported_min_ts = None
+
+if reported_delta_vals:
+    idx_delta = reported_delta_vals.index(max(reported_delta_vals))
+    reported_delta = reported_delta_vals[idx_delta]
+    reported_delta_ts = reported_ts_list[idx_delta]
+else:
+    reported_delta = None
+    reported_delta_ts = None
 
 # -----------------------------------------------------
 # RESULTS JSON
@@ -284,9 +344,9 @@ with open(results_path, "w", encoding=OUTPUT_ENCODING) as f:
         "Max_Imbalance_Timestamp": max_imbalance_ts,
 
         # Reported by CAN ID 0x014E
-        "Reported_Ext_Temp_Delta": reported_delta,
-        "Reported_Ext_Temp_Min": reported_min,
-        "Reported_Ext_Temp_Max": reported_max,
+        "Reported_Ext_Temp_Delta": f"{reported_delta} °C ({reported_delta_ts})",
+        "Reported_Ext_Temp_Min": f"{reported_min} °C ({reported_min_ts})",
+        "Reported_Ext_Temp_Max": f"{reported_max} °C ({reported_max_ts})",
 
         "Fails": fails,
         "Warnings": warnings
@@ -318,9 +378,9 @@ lines = [
     row("Max_Imbalance_Observed", imb_str),
 
     # New CAN-reported fields
-    row("Reported_Ext_Temp_Delta", f"{reported_delta} °C"),
-    row("Reported_Ext_Temp_Min", f"{reported_min} °C"),
-    row("Reported_Ext_Temp_Max", f"{reported_max} °C"),
+    row("Reported_Ext_Temp_Delta", f"{reported_delta} °C ({reported_delta_ts})"),
+    row("Reported_Ext_Temp_Min", f"{reported_min} °C ({reported_min_ts})"),
+    row("Reported_Ext_Temp_Max", f"{reported_max} °C ({reported_max_ts})"),
 
     border
 ]
@@ -356,7 +416,7 @@ times = [ts/1000.0 for ts in df["ts"]]
 ntc_series = {ntc: [] for ntc in active_ntc}
 plot_zero_streak = {ntc: 0 for ntc in active_ntc}
 
-for arr in df["temps"]:
+for i, arr in enumerate(df["temps"]):
 
     for ntc_idx in active_ntc:
         val = arr[ntc_idx]
@@ -364,7 +424,7 @@ for arr in df["temps"]:
         if not isinstance(val, int):
             plot_value = None
 
-        elif val == 0 and bms_state != 0:
+        elif val == 0 and df.iloc[i].bms_state != 0:
             plot_value = None
 
         elif val == 0:
