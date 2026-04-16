@@ -1,4 +1,4 @@
 
 CANalyzer v1.0.35
-Improved CELL TEMP IMBALANCE issue analysis.
+Improved CELL TEMP IMBALANCE analysis issue bug.
 Now Reported Tmax , Tmin, Tdelta will also have timestamp
