@@ -13,6 +13,7 @@ REPO_NAME = "CAN-LOG-ANALYSER"
 BRANCH = "main"
 
 RAW_VERSION_URL = f"https://raw.githubusercontent.com/{REPO_USER}/{REPO_NAME}/{BRANCH}/version.txt"
+RAW_CHANGELOG_URL = f"https://raw.githubusercontent.com/{REPO_USER}/{REPO_NAME}/{BRANCH}/CHANGELOG.txt"
 API_ROOT_URL = f"https://api.github.com/repos/{REPO_USER}/{REPO_NAME}/contents"
 DEFAULT_LOCAL_VERSION = "1.0.0"
 
@@ -159,6 +160,8 @@ def check_for_update(local_version, app):
     parent = app.activeWindow() if app else None
 
     online_version = get_text_file_content(RAW_VERSION_URL)
+    changelog = get_text_file_content(RAW_CHANGELOG_URL) or "No changelog available."
+
     if not online_version:
         QMessageBox.warning(parent, "Update Error", "Could not read version.txt from GitHub.")
         return
@@ -167,12 +170,15 @@ def check_for_update(local_version, app):
         print("Already up to date")
         return
 
-    reply = QMessageBox.question(
-        parent,
-        "Update Available",
-        f"A new version ({online_version}) is available.\n\nDo you want to update?",
-        QMessageBox.Yes | QMessageBox.No
-    )
+    # ---------- CHANGELOG POPUP ----------
+    msg = QMessageBox(parent)
+    msg.setWindowTitle("Update Available")
+    msg.setIcon(QMessageBox.Information)
+    msg.setText(f"A new version ({online_version}) is available.\n\nDo you want to update?")
+    msg.setDetailedText(changelog)
+    msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+
+    reply = msg.exec()
     if reply != QMessageBox.Yes:
         return
 
