@@ -174,14 +174,15 @@ def check_for_update(local_version, app):
     msg = QMessageBox(parent)
     msg.setWindowTitle("Update Available")
     msg.setIcon(QMessageBox.Information)
-    msg.setText(f"A new version ({online_version}) is available.\n\nDo you want to update?")
-    msg.setDetailedText(changelog)
+    msg.setText(
+        f"A new version ({online_version}) is available.\n\n"
+        f"Changes:\n{changelog}\n\n"
+        f"Do you want to update?"
+    )
     msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-
     reply = msg.exec()
     if reply != QMessageBox.Yes:
         return
-
     target_folder = os.path.dirname(os.path.abspath(sys.argv[0]))
 
     # ----------------- EXE UPDATE MODE -------------------
