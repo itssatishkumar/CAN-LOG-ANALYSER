@@ -1,13 +1,4 @@
-Create a PySide6-based auto-update system for a Python application that checks a GitHub repository for updates using a remote version.txt file. If a newer version is available, fetch and display a CHANGELOG.txt file from the same repository in a popup dialog before asking the user to proceed with the update.
 
-Requirements:
-
-Compare local and remote version values
-Fetch changelog from GitHub (no local dependency)
-Show changelog inside a QMessageBox using detailed text
-Proceed with update only if user confirms
-Support both .exe and Python script update modes
-After update, overwrite local version.txt to prevent repeated prompts
-Ensure changelog is shown only once per new version
-
-Do not rely on local changelog files. Everything must be fetched dynamically from GitHub.
+CANalyzer v1.0.35
+Improved CELL TEMP IMBALANCE issue analysis.
+Now Reported Tmax , Tmin, Tdelta will also have timestamp
