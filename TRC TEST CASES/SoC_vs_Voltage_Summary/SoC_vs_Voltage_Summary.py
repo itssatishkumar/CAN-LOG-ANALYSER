@@ -80,24 +80,30 @@ def parse_trc_line(line: str):
 
     return ts, canid, dlc, data_bytes
 
-
 def decode_frame(canid: int, data: list[int]) -> dict:
     if canid == 0x0109:
-        # SoC: bytes 0-1 Intel, sf=0.01
         soc = u16_le(data[0], data[1]) * 0.01
-        # BMS_State: byte 4
         bms_state = data[4]
         return {"SoC": soc, "BMS_State": bms_state}
 
     if canid == 0x0602:
-        # Charging_Info: startbit 48 len 8 => byte 6 (second-last byte)
         charging_info = data[6]
         return {"Charging_Info": charging_info}
 
+    if canid == 0x0110:
+        raw = int.from_bytes(bytes(data[4:8]), byteorder="little", signed=True)
+        current = raw * 1e-5
+        return {"Pack_Current": current}
+
     if canid == 0x012C:
-        # Voltage_Delta: 32|16 Intel => bytes 4-5, sf=0.1
         vdelta = u16_le(data[4], data[5]) * 0.1
-        return {"Voltage_Delta": vdelta}
+        vmin = u16_le(data[2], data[3]) * 0.1
+        vmax = u16_le(data[0], data[1]) * 0.1
+        return {
+            "Voltage_Delta": vdelta,
+            "Voltage_Min": vmin,
+            "Voltage_Max": vmax,
+        }
 
     return {}
 
@@ -106,8 +112,8 @@ def decode_frame(canid: int, data: list[int]) -> dict:
 # TRC -> DataFrame (merged by timestamp)
 # =====================================================
 def trc_to_timeseries_df(trc_path: str, progress_cb=None) -> pd.DataFrame:
-    needed_ids = {0x0109, 0x0602, 0x012C}
-    columns = ("SoC", "BMS_State", "Charging_Info", "Voltage_Delta")
+    needed_ids = {0x0109, 0x0602, 0x0110, 0x012C}
+    columns = ("SoC", "BMS_State", "Charging_Info", "Voltage_Delta", "Voltage_Min", "Voltage_Max", "Pack_Current")
     rows = []
 
     last_row = {c: pd.NA for c in columns}
@@ -136,7 +142,7 @@ def trc_to_timeseries_df(trc_path: str, progress_cb=None) -> pd.DataFrame:
                         val = current_values[col]
                         row[col] = val if not pd.isna(val) else last_row[col]
                     rows.append(row)
-                    last_row = row
+                    last_row = row.copy()
                 current_ts = ts
                 current_values = {c: pd.NA for c in columns}
 
@@ -153,12 +159,9 @@ def trc_to_timeseries_df(trc_path: str, progress_cb=None) -> pd.DataFrame:
         rows.append(row)
 
     if not rows:
-        return pd.DataFrame(columns=["Timestamp", "SoC", "BMS_State", "Charging_Info", "Voltage_Delta"])
+        return pd.DataFrame(columns=["Timestamp", "SoC", "BMS_State", "Charging_Info", "Voltage_Delta", "Voltage_Min", "Voltage_Max", "Pack_Current"])
 
     df = pd.DataFrame(rows)
-
-    # If BMS_State is 0, invalidate SoC (set to NA)
-    df.loc[df["BMS_State"] == 0, "SoC"] = pd.NA
 
     return df
 
@@ -172,11 +175,11 @@ def compute_imbalance_summary(df: pd.DataFrame):
     if missing:
         return pd.DataFrame(), f"Skipped - Required columns missing: {sorted(missing)}"
 
-    d = df.loc[df["BMS_State"] == 3, ["SoC", "Charging_Info", "Voltage_Delta"]].copy()
+    d = df.loc[df["BMS_State"] != 0, ["SoC", "Charging_Info", "Voltage_Delta"]].copy()
     d = d.dropna(subset=["SoC", "Charging_Info", "Voltage_Delta"])
 
     if d.empty:
-        return pd.DataFrame(), "Skipped - No valid BMS_State == 3 entries"
+        return pd.DataFrame(), "Skipped - No valid BMS_State != 0 entries"
 
     mode_map = {0: "Discharging", 1: "OBC Charging", 17: "Fast Charging", 33: "Fast Charging"}
     counts = d["Charging_Info"].value_counts()
@@ -220,85 +223,84 @@ def compute_imbalance_summary(df: pd.DataFrame):
 
     return pd.DataFrame(results), mode
 
+def compute_imbalance(df: pd.DataFrame):
+    d = df.dropna(subset=["SoC", "Voltage_Delta", "Voltage_Min", "Voltage_Max"])
+    if d.empty:
+        return "", ""
+
+    idx = d["Voltage_Delta"].idxmax()
+    peak = d.loc[idx]
+    peak_str = f"Peak Imbalance : {peak['Voltage_Delta']:.0f}mV (Vmax: {peak['Voltage_Max']:.0f}mV, Vmin: {peak['Voltage_Min']:.0f}mV, SoC {peak['SoC']:.2f}%)"
+    avg = d["Voltage_Delta"].mean()
+    avg_str = f"Average Imbalance : {avg:.0f}mV"
+    return peak_str, avg_str
+
+def save_txt(text: str):
+    p = Path(__file__).resolve()
+
+    for parent in [p] + list(p.parents):
+        history = parent / "History"
+        if history.exists() and history.is_dir():
+            file = history / "imbalance.txt"
+            with open(file, "w", encoding="utf-8") as f:
+                f.write(text)
+            return
+
+    raise FileNotFoundError("History folder not found")
 
 # =====================================================
-# TABLE PNG (graph output)
+# GRAPH PLOTTING 
 # =====================================================
-def save_soc_voltage_summary_table_png(summary_df: pd.DataFrame, mode: str, out_path: str):
-    df = summary_df.copy()
+def plot_graph(df: pd.DataFrame, out_path: str):
+    x = range(len(df))
+    soc = pd.to_numeric(df["SoC"], errors="coerce")
+    vmax = pd.to_numeric(df["Voltage_Max"], errors="coerce")
+    vmin = pd.to_numeric(df["Voltage_Min"], errors="coerce")
+    vdelta = pd.to_numeric(df["Voltage_Delta"], errors="coerce")
+    current = pd.to_numeric(df["Pack_Current"], errors="coerce")
 
-    # Format display
-    if "Voltage_Delta" in df.columns:
-        df["Voltage_Delta"] = df["Voltage_Delta"].apply(
-            lambda x: "" if x == "" or pd.isna(x) else f"{float(x):.0f}"
-        )
-    if "Failed_Count" in df.columns:
-        df["Failed_Count"] = df["Failed_Count"].apply(
-            lambda x: "" if x == "" or pd.isna(x) else str(int(x))
-        )
+    mask = soc.notna() & vmax.notna() & vmin.notna() & vdelta.notna() & current.notna()
+    x = pd.Series(x)[mask]
+    soc, vmax, vmin, vdelta, current = soc[mask], vmax[mask], vmin[mask], vdelta[mask], current[mask]
 
-    col_labels = df.columns.tolist()
-    cell_text = df.values.tolist()
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
 
-    fig_w = max(10, 1.3 * len(col_labels))
-    fig_h = max(2.8, 0.6 + 0.45 * (len(df) + 1))
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-    ax.axis("off")
+    ax1.plot(x, vmax, color="blue", label="Voltage_Max")
+    ax1.plot(x, vmin, color="green", label="Voltage_Min")
+    ax1.set_ylabel("Voltage")
+    ax1.grid()
 
-    title = f"SoC vs Voltage Summary (Mode: {mode})"
+    ax1b = ax1.twinx()
+    ax1b.plot(x, vdelta, color="red", label="Voltage_Delta")
+    ax1b.set_ylabel("Voltage_Delta")
 
-    table = ax.table(
-        cellText=cell_text,
-        colLabels=col_labels,
-        cellLoc="center",
-        colLoc="center",
-        loc="center",
-    )
+    ax1.legend(loc="upper left")
+    ax1b.legend(loc="upper right")
 
-    table.auto_set_font_size(False)
-    table.set_fontsize(11)
-    table.scale(1.0, 1.6)
+    pos_mask = current >= 0
+    neg_mask = current < 0
+    ax2.vlines(x[pos_mask], [0]*len(x[pos_mask]), current[pos_mask], color="green", linewidth=0.8, label="Charge (+)")
+    ax2.vlines(x[neg_mask], [0]*len(x[neg_mask]), current[neg_mask], color="red", linewidth=0.8, label="Discharge (-)")
 
-    header_color = "#d9e1f2"
-    status_ok = "#d8f3dc"
-    highlight_color = "#ffe699"
-    title_bar_color = "#00b050"
+    ax2.set_xlabel("SoC (%)")
+    ax2.set_ylabel("Current (A)")
+    ax2.grid()
+    ax2.legend()
 
-    # Header styling + borders
-    for (r, c), cell in table.get_celld().items():
-        cell.set_edgecolor("#bfbfbf")
-        cell.set_linewidth(0.8)
-        if r == 0:
-            cell.set_facecolor(header_color)
-            cell.set_text_props(fontweight="bold")
+    # SoC labels on x-axis (both plots)
+    step = max(1, len(x) // 10)
+    ticks = x.iloc[::step]
+    labels = soc.iloc[::step].round(1)
+    ax2.set_xticks(ticks)
+    ax2.set_xticklabels(labels)
+    ax1.set_xticks(ticks)
+    ax1.set_xticklabels(labels)
 
-    # Highlight the column for the active mode if present
-    highlight_col = mode if mode in df.columns else None
-    if highlight_col:
-        hc = df.columns.get_loc(highlight_col)
-        for r in range(1, len(df) + 1):
-            table[(r, hc)].set_facecolor(highlight_color)
-
-    # Green status cells for PASS
-    if "Status" in df.columns:
-        sc = df.columns.get_loc("Status")
-        for r in range(1, len(df) + 1):
-            val = str(df.iloc[r - 1, sc]).strip().upper()
-            if val == "PASS":
-                table[(r, sc)].set_facecolor(status_ok)
-
-    # Title bar
-    ax.add_patch(
-        plt.Rectangle((0, 1.02), 1, 0.12, transform=ax.transAxes, clip_on=False, linewidth=0, facecolor=title_bar_color)
-    )
-    ax.text(0.5, 1.08, title, transform=ax.transAxes, ha="center", va="center",
-            fontsize=14, fontweight="bold", color="white")
+    fig.suptitle("Max/Min Cell Voltages, Imbalance, and Pack Current vs SoC")
 
     plt.tight_layout()
-    plt.savefig(out_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-
-
+    plt.savefig(out_path)
+    plt.close()
 # =====================================================
 # RESULT + SUMMARY JSON
 # =====================================================
@@ -339,7 +341,7 @@ def make_summary_lines(summary_df: pd.DataFrame, mode: str, result: str) -> list
     return lines
 
 
-def save_outputs(summary_df: pd.DataFrame, mode: str):
+def save_outputs(summary_df: pd.DataFrame, mode: str, df: pd.DataFrame):
     cfg = OUTPUTS["SoC VS VOLTAGE SUMMARY"]
 
     graph_path = SCRIPT_DIR / cfg["graph"]
@@ -348,39 +350,50 @@ def save_outputs(summary_df: pd.DataFrame, mode: str):
 
     res = overall_result(summary_df)
 
-    # graph/table
-    save_soc_voltage_summary_table_png(summary_df, mode, str(graph_path))
+    # graph
+    plot_graph(df, str(graph_path))
 
-    # summary json (row-wise + combined text)
+    # summary json
     summary_lines = make_summary_lines(summary_df, mode, res)
+    peak_str, avg_str = compute_imbalance(df)
     with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump({"Summary": summary_lines}, f, indent=2)
+        json.dump({"Summary": summary_lines, "Peak Imbalance": peak_str, "Average Imbalance": avg_str}, f, indent=2)
 
-    # result json (PASS/FAIL)
+    # save txt in History
+    save_txt(f"{peak_str}\n{avg_str}")
+
+    # result json
     with open(result_path, "w", encoding="utf-8") as f:
         json.dump({"Result": res}, f, indent=2)
 
     return str(result_path), str(summary_path), str(graph_path)
-
 
 # =====================================================
 # MAIN
 # =====================================================
 def main():
     # -----------------------------------------------------
-    # GET TRC FROM MAIN GUI ARGUMENT
+    # GET TRC FROM MAIN GUI ARGUMENT / TKINTER
     # -----------------------------------------------------
     if len(sys.argv) < 2:
-        print("ERROR: No TRC file received from GUI!")
-        sys.exit(1)
+        import tkinter as tk
+        from tkinter import filedialog
 
-    trc_path = sys.argv[1]
+        root = tk.Tk()
+        root.withdraw()
+        trc_path = filedialog.askopenfilename(filetypes=[("TRC files", "*.trc"), ("All files", "*.*")])
+
+        if not trc_path:
+            print("ERROR: No TRC file selected!")
+            sys.exit(1)
+    else:
+        trc_path = sys.argv[1]
 
     if not os.path.exists(trc_path):
         print(f"ERROR: TRC file not found: {trc_path}")
         sys.exit(1)
 
-    print(f"Using TRC file from GUI: {trc_path}")
+    print(f"Using TRC file: {trc_path}")
     print(f"Outputs will be saved next to script: {SCRIPT_DIR}")
 
     progress_cb = progress_by_bytes(trc_path, step=PROGRESS_STEP)
@@ -393,14 +406,13 @@ def main():
 
     # If compute_imbalance_summary returns "Skipped - ..." in mode, handle gracefully
     if isinstance(mode, str) and mode.startswith("Skipped"):
-        # save minimal outputs anyway
         empty = pd.DataFrame(columns=["SoC (%)","OBC Charging","Fast Charging","Discharging","Voltage_Delta","Failed_Count","Status"])
-        result_path, summary_path, graph_path = save_outputs(empty, mode)
+        result_path, summary_path, graph_path = save_outputs(empty, mode, df)
         print("Skipped:", mode)
         print("Saved:", result_path, summary_path, graph_path)
         return
 
-    result_path, summary_path, graph_path = save_outputs(summary_df, mode)
+    result_path, summary_path, graph_path = save_outputs(summary_df, mode, df)
 
     print("Done.")
     print("Result JSON :", result_path)
