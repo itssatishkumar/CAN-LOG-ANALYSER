@@ -1158,6 +1158,46 @@ def main():
 
     soc_list, current_list, odo_list, ntc_list, uv_list, voltage_list = parse_trc(trc, progress_cb=parse_cb)
     total_energy_wh = integrate_energy(current_list, voltage_list)
+    # ---- VOLTAGE RANGE ----
+    if voltage_list:
+        voltages = [v for _, v in voltage_list]
+        max_v = max(voltages)
+        min_v = min(voltages)
+        voltage_range_str = f"{max_v:.1f}V to {min_v:.1f}V"
+    else:
+        max_v = min_v = None
+        voltage_range_str = "N/A"
+
+    # ---- REGEN ENERGY ----
+    regen_energy_j = 0.0
+    v_index = 0
+    last_voltage = None
+
+    current_list_sorted = sorted(current_list, key=lambda x: x[0])
+    voltage_list_sorted = sorted(voltage_list, key=lambda x: x[0])
+
+    for i in range(1, len(current_list_sorted)):
+        t_prev, _ = current_list_sorted[i - 1]
+        t_now, current = current_list_sorted[i]
+
+        dt = (t_now - t_prev).total_seconds()
+        if dt <= 0 or dt > 0.5:
+            continue
+
+        while v_index < len(voltage_list_sorted) and voltage_list_sorted[v_index][0] <= t_now:
+            last_voltage = voltage_list_sorted[v_index][1]
+            v_index += 1
+
+        if last_voltage is None:
+            continue
+
+        if current >= 0:
+            regen_energy_j += last_voltage * current * dt
+
+    regen_energy_wh = regen_energy_j / 3600.0
+
+    # ---- BATTERY ENERGY ----
+    battery_energy_wh = total_energy_wh - regen_energy_wh
 
     # NEW: parse per-sensor therm signals (for min/max + signal name in table only)
     therm_samples = parse_thermistor_frames(trc, progress_cb=therm_cb, total_lines=None)
@@ -1175,11 +1215,22 @@ def main():
 
     # keep summary json as-is (raw current integration totals)
     stats = summarize_current(current_list)
+
     summary = {
         "Capacity_Summary": {
-            "Charge_Ah": f"{stats['charge_ah']:.4f}",
-            "Discharge_Ah": f"{stats['discharge_ah']:.4f}",
-            "Capacity_Exchange_Ah": f"{stats['exchange_ah']:.4f}",
+            "Range_Below_SoC_1_percent_km": f"{dist_after_low_soc:.2f}" if dist_after_low_soc is not None else None,
+
+            "Pack_Voltage_Range": voltage_range_str,
+
+            "Total_Capacity_Ah": f"{stats['exchange_ah']:.4f}",
+            "Total_Energy_Wh": f"{total_energy_wh:.2f}",
+
+            "Regen_Capacity_Ah": f"{stats['charge_ah']:.4f}",
+            "Regen_Energy_Wh": f"{regen_energy_wh:.2f}",
+
+            "Battery_Capacity_Ah": f"{(stats['exchange_ah'] - stats['charge_ah']):.4f}",
+            "Battery_Energy_Wh": f"{battery_energy_wh:.2f}",
+
             "Valid_dt_Count": stats["valid_dt_count"],
             "Default_dt_Count": stats["default_dt_count"],
             "Default_dt_Value_s": stats["default_dt_value"],
@@ -1203,8 +1254,32 @@ def main():
         low_soc_found=low_soc_found,
         energy_wh=total_energy_wh,
     )
+
+    # ---- WRITE HISTORY TXT ----
+    base_path = Path(__file__).resolve()
+
+    history_folder = None
+    for parent in base_path.parents:
+        candidate = parent / "History"
+        if candidate.exists() and candidate.is_dir():
+            history_folder = candidate
+            break
+
+    if history_folder is None:
+        raise Exception("History folder not found")
+
+    history_file = history_folder / "Range+Energy_Capacity.txt"
+
+    with open(history_file, "w") as f:
+        f.write(f'"Range_Below_SoC_1_percent_km": "{dist_after_low_soc:.2f}",\n')
+        f.write(f'"Pack_Voltage_Range": "{voltage_range_str}",\n')
+        f.write(f'"Total_Capacity_Ah": "{stats["exchange_ah"]:.4f}",\n')
+        f.write(f'"Total_Energy_Wh": "{total_energy_wh:.2f}",\n')
+        f.write(f'"Regen_Capacity_Ah": "{stats["charge_ah"]:.4f}",\n')
+        f.write(f'"Regen_Energy_Wh": "{regen_energy_wh:.2f}",\n')
+        f.write(f'"Battery_Capacity_Ah": "{(stats["exchange_ah"] - stats["charge_ah"]):.4f}",\n')
+        f.write(f'"Battery_Energy_Wh": "{battery_energy_wh:.2f}"\n')
+
     print("PROGRESS 100.0", flush=True)
 
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
