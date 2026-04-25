@@ -384,6 +384,15 @@ def main():
     nice_name = _with_final_prefix(nice_name)
     outpath = first_folder / f"{nice_name}.trc"
     outpath.write_text(merged_text, encoding="utf-8")
+    history_dir = Path(__file__).resolve().parent / "History"
+    if not history_dir.exists():
+        history_dir.mkdir()
+
+    history_file = history_dir / "vehicle_details.txt"
+
+    with open(history_file, "w", encoding="utf-8") as f:
+        f.write(outpath.name + "\n")
+        f.write(_format_timestamp(earliest_dt) + "\n")
 
     try:
         marker = Path(__file__).resolve().with_name("last_merged_trc.txt")
