@@ -1,3 +1,4 @@
+
 import os
 import sys
 import pandas as pd
@@ -93,6 +94,8 @@ reported_min_vals = []
 reported_delta_vals = []
 reported_ts_list = []
 bms_state_list = []
+soc_list = []
+last_soc = None
 last_bms_state = 0
 ignore_014E = False
 prev_bms_state = 0
@@ -138,6 +141,11 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         if can_id == 0x109 and dlc >= 5:
             prev_bms_state = last_bms_state
             last_bms_state = data[4]
+
+            # SOC = 0|16 → bytes 0,1 little endian, scale 0.01
+            if dlc >= 2:
+                raw_soc = data[0] | (data[1] << 8)
+                last_soc = raw_soc * 0.01
 
             if pending_014E:
                 if prev_bms_state != 0 and last_bms_state != 0:
@@ -194,6 +202,7 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         temps_list.append(temp_arr.copy())
         full_ts_list.append(ts_string)
         bms_state_list.append(last_bms_state)
+        soc_list.append(last_soc)
         if ts_ms - first_ts <= 10000:
             raw_first_10s.append(temp_arr.copy())
 
@@ -219,9 +228,9 @@ df = pd.DataFrame({
     "ts": timestamps,
     "temps": temps_list,
     "full_ts": full_ts_list,
-    "bms_state": bms_state_list
+    "bms_state": bms_state_list,
+    "soc": soc_list
 })
-
 # -----------------------------------------------------
 # MAIN IMBALANCE ANALYSIS
 # -----------------------------------------------------
@@ -231,7 +240,14 @@ warnings = []
 zero_streak = {ntc: 0 for ntc in active_ntc}
 
 max_imbalance_seen = 0.0
+global_tmax = -999
+global_tmin = 999
+max_delta = 0
+max_delta_tmax = None
+max_delta_tmin = None
+max_delta_soc = None
 max_imbalance_ts = "-"
+
 
 for i in range(1, len(df)):
 
@@ -273,11 +289,15 @@ for i in range(1, len(df)):
 
     tmax = max(active_vals)
     tmin = min(active_vals)
+    global_tmax = max(global_tmax, tmax)
+    global_tmin = min(global_tmin, tmin)
     imbalance = tmax - tmin
 
-    if imbalance > max_imbalance_seen:
-        max_imbalance_seen = imbalance
-        max_imbalance_ts = curr.full_ts
+    if imbalance > max_delta:
+        max_delta = imbalance
+        max_delta_tmax = tmax
+        max_delta_tmin = tmin
+        max_delta_soc = curr.soc
 
     # Outlier detection
     vals_sorted = sorted(active_vals)
@@ -408,7 +428,18 @@ with open(summary_path, "w", encoding=OUTPUT_ENCODING) as f:
     json.dump({"Summary_Table": lines}, f, indent=4, ensure_ascii=False)
 
 print(f"Saved: {summary_path}")
+from pathlib import Path
 
+def save_txt(text: str):
+    p = Path(__file__).resolve()
+
+    for parent in [p] + list(p.parents):
+        history = parent / "History"
+        if history.exists() and history.is_dir():
+            file = history / "temp_data.txt"
+            with open(file, "w", encoding="utf-8") as f:
+                f.write(text)
+            return
 # -----------------------------------------------------
 # SIMPLE TIMESERIES GRAPH
 # -----------------------------------------------------
@@ -481,4 +512,12 @@ plt.close()
 
 print(f"Saved: {timeseries_path}")
 print("PROGRESS 100.0", flush=True)
+txt = (
+    f"Temperature Range: {global_tmin}°C to {global_tmax}°C\n"
+    f"Max Delta: {round(max_delta,3)}°C "
+    f"(Tmax: {max_delta_tmax}°C, "
+    f"Tmin: {max_delta_tmin}°C, "
+    f"SoC: {round(max_delta_soc,2) if max_delta_soc is not None else 'NA'} %)"
+)
+save_txt(txt)
 print("Cell Temperature Imbalance Analysis DONE :)")
