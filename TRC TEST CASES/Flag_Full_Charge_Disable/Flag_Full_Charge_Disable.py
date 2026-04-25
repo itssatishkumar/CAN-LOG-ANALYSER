@@ -310,6 +310,18 @@ def make_plot(history, valid_event, invalid_event):
 # ------------------------------------------------------------
 # Main
 # ------------------------------------------------------------
+def save_txt(text: str):
+    p = Path(__file__).resolve()
+
+    for parent in [p] + list(p.parents):
+        history = parent / "History"
+        if history.exists() and history.is_dir():
+            file = history / "FFC_Check.txt"
+            with open(file, "w", encoding="utf-8") as f:
+                f.write(text)
+            return
+
+
 def main():
     if len(sys.argv) < 2:
         print("ERROR: TRC file missing!")
@@ -333,11 +345,15 @@ def main():
 
     if invalid_event:
         print("FAIL: Illegal FFC drop detected.")
-    elif valid_event:
-        print("PASS: Valid transition detected.")
+        txt = "FFC transition is Invalid"
     else:
-        print("PASS: No transition occurred.")
+        print("PASS: Valid transition detected." if valid_event else "PASS: No transition occurred.")
+        txt = "FFC transition is Valid"
+
+    save_txt(txt)
+
     print("PROGRESS 100.0", flush=True)
+
 
 if __name__ == "__main__":
     main()
