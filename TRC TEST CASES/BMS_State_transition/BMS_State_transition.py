@@ -216,6 +216,18 @@ with open(summary_path, "w", encoding="utf-8") as f:
     json.dump({"Summary_Table": table_lines}, f, indent=4)
 
 print(f"Saved summary JSON: {summary_path}")
+from pathlib import Path
+
+def save_txt(text: str):
+    p = Path(__file__).resolve()
+
+    for parent in [p] + list(p.parents):
+        history = parent / "History"
+        if history.exists() and history.is_dir():
+            file = history / "BMSS_Transition.txt"
+            with open(file, "w", encoding="utf-8") as f:
+                f.write(text)
+            return
 
 # -----------------------------------------------------
 # PNG PLOT
@@ -279,4 +291,10 @@ plt.close()
 
 print(f"Saved PNG plot: {png_path}")
 print("PROGRESS 100.0", flush=True)
+if overall_result == "PASS":
+    txt = "All transitions are Valid"
+else:
+    txt = "All transitions were not Valid"
+
+save_txt(txt)
 print("BMS State Transition Check DONE")
