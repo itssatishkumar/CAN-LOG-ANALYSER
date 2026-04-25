@@ -166,6 +166,36 @@ for i in range(1, len(bms_full)):
 if to_ignore:
     df_valid = df_valid.drop(list(to_ignore)).reset_index(drop=True)
 
+# -----------------------------------------------------
+# ROBUST ZERO SoC FILTER (GLOBAL – applies to ALL logic)
+# Keep zero SoC only if >=5 continuous samples with BMS != 0
+# -----------------------------------------------------
+soc = df_valid["SoC"].values
+bms = df_valid["BMS"].values
+
+keep_mask = np.ones(len(df_valid), dtype=bool)
+
+i = 0
+n = len(df_valid)
+
+while i < n:
+    if soc[i] == 0 and bms[i] != 0:
+        j = i
+        count = 0
+
+        while j < n and soc[j] == 0 and bms[j] != 0:
+            count += 1
+            j += 1
+
+        if count < 5:
+            keep_mask[i:j] = False  # remove false zero block
+
+        i = j
+    else:
+        i += 1
+
+df_valid = df_valid[keep_mask].reset_index(drop=True)
+
 # Ensure all delta calculations only use valid SoC transitions (both previous and current BMS != 0)
 soc_arr = df_valid["SoC"].values
 ts_arr = df_valid["ts"].values
