@@ -88,7 +88,19 @@ def decode_frame(canid: int, data: list[int]) -> dict:
 
     if canid == 0x0602:
         charging_info = data[6]
-        return {"Charging_Info": charging_info}
+        vehicle_state_raw = data[7]
+
+        state_map = {
+            0: "OFF",
+            1: "Charge",
+            2: "Drive",
+            3: "FullCharge"
+        }
+
+        return {
+            "Charging_Info": charging_info,
+            "Vehicle_State": state_map.get(vehicle_state_raw, f"Unknown({vehicle_state_raw})")
+        }
 
     if canid == 0x0110:
         raw = int.from_bytes(bytes(data[4:8]), byteorder="little", signed=True)
@@ -113,7 +125,7 @@ def decode_frame(canid: int, data: list[int]) -> dict:
 # =====================================================
 def trc_to_timeseries_df(trc_path: str, progress_cb=None) -> pd.DataFrame:
     needed_ids = {0x0109, 0x0602, 0x0110, 0x012C}
-    columns = ("SoC", "BMS_State", "Charging_Info", "Voltage_Delta", "Voltage_Min", "Voltage_Max", "Pack_Current")
+    columns = ("SoC", "BMS_State", "Charging_Info", "Vehicle_State", "Voltage_Delta", "Voltage_Min", "Voltage_Max", "Pack_Current")
     rows = []
 
     last_row = {c: pd.NA for c in columns}
@@ -358,6 +370,22 @@ def save_outputs(summary_df: pd.DataFrame, mode: str, df: pd.DataFrame):
     peak_str, avg_str = compute_imbalance(df)
     vmax_raw = pd.to_numeric(df["Voltage_Max"], errors="coerce")
     max_spike = vmax_raw.max()
+    state_series = df.get("Vehicle_State", None)
+    mode_str = "NA"
+    if state_series is not None:
+        clean = state_series.dropna()
+        total = len(clean)
+
+        if total > 0:
+            counts = {}
+            for v in clean:
+                counts[v] = counts.get(v, 0) + 1
+
+            percent = {k: p for k, v in counts.items() if (p := round((v / total) * 100)) > 0}
+            mode_str = ", ".join(
+                f"{k} {v}%"
+                for k, v in sorted(percent.items(), key=lambda x: x[1], reverse=True)
+            )
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump({"Summary": summary_lines, "Peak Imbalance": peak_str, "Average Imbalance": avg_str}, f, indent=2)
 
@@ -365,7 +393,8 @@ def save_outputs(summary_df: pd.DataFrame, mode: str, df: pd.DataFrame):
     txt = (
         f"{peak_str}\n"
         f"{avg_str}\n"
-        f"Max Voltage Spike: {max_spike:.0f}mV"
+        f"Max Voltage Spike: {max_spike:.0f}mV\n"
+        f"Vehicle Mode: ({mode_str})"
     )
     save_txt(txt)
 
