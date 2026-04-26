@@ -1,17 +1,15 @@
 import os
-import json
 import gspread
 from google.oauth2.service_account import Credentials
+from gspread.utils import rowcol_to_a1
 
-# ---------------- GOOGLE SHEET CONFIG ----------------
+# ---------------- CONFIG ----------------
 SPREADSHEET_ID = "1nDkL93epR1RQfFvCrzAVeiu5a9TpaU2484sOaVkQAQw"
 WORKSHEET_ID = 888141416
 SERVICE_ACCOUNT_FILE = "Google_sheet.json"
 
-DEFAULT_TESTS_FOLDER = "TRC TEST CASES"
 
-
-# ---------------- CONNECT SHEET ----------------
+# ---------------- CONNECT ----------------
 def get_sheet():
     creds = Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE,
@@ -21,175 +19,235 @@ def get_sheet():
     return client.open_by_key(SPREADSHEET_ID).get_worksheet_by_id(WORKSHEET_ID)
 
 
-# ---------------- RESET + HEADER ----------------
-def reset_sheet_with_header(sheet):
-    headers = [
-        "TnV Vehicle",
-        "DATE",
-        "Firmware",
-        "Configuration",
-        "Manifest",
-        "GITSHA",
-        "MODE",
-        "Payload (kg)",
-        "Vehicle Total Range (km)",
-        "Range Below SoC 1%",
-        "Consumed Energy (From Battery Wh)",
-        "Regen Energy (Wh)"
-    ]
+# ---------------- HEADER ----------------
+HEADERS = [
+    "TnV Vehicle",
+    "DATE",
+    "BMS Hardware",
+    "BMS Firmware",
+    "BMS Configuration",
+    "BMS Manifest",
+    "BMS Gitsha",
+    "Vehicle Drive Mode",
+    "Payload (kg)",
+    "Vehicle Total Range (km)",
+    "Pack Voltage Range (V)",
+]
 
+def reset_sheet(sheet):
     sheet.clear()
-    sheet.update("A1:L1", [headers])
+    end = rowcol_to_a1(1, len(HEADERS))
+    sheet.update(f"A1:{end}", [HEADERS])
 
     sheet.format(
-        "A1:L1",
+        f"A1:{end}",
         {
             "textFormat": {
                 "foregroundColor": {"red": 1, "green": 1, "blue": 1},
-                "fontFamily": "Calibri",
                 "bold": True
             },
-            "backgroundColor": {"red": 0.16, "green": 0.66, "blue": 0.29},
-            "horizontalAlignment": "CENTER"
+            "backgroundColor": {"red": 0.16, "green": 0.66, "blue": 0.29}
         }
     )
 
 # =====================================================
-# 🔥 TEST CASE PLACEHOLDERS (FILL LOGIC LATER)
+# 🔥 TEST CASE 1 : TnV Vehicle
 # =====================================================
-
-def test_soc_behavior(tests_folder):
-    # TODO: extract SoC behavior data
+def test_tnv_vehicle():
     return None
 
 
-def test_shutdown_process(tests_folder):
-    # TODO
+# =====================================================
+# 🔥 TEST CASE 2 : DATE
+# =====================================================
+def test_date():
+    path = os.path.join(os.getcwd(), "History", "vehicle_details.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        lines = f.readlines()
+
+    if len(lines) >= 2:
+        line = lines[1]  # 2nd line
+        date_time = line.split(",")[0].strip()   # "15-04-2026 23:57:21.7930"
+        return date_time.split(" ")[0]           # "15-04-2026"
+
+    return None
+
+# =====================================================
+# 🔥 TEST CASE 3 : BMS Hardware
+# =====================================================
+def test_bms_hw():
+    path = os.path.join(os.getcwd(), "History", "Firmware+Config_details.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("BMS_HW"):
+                return line.split(":")[1].strip()
     return None
 
 
-def test_precharge_process(tests_folder):
-    # TODO
+# =====================================================
+# 🔥 TEST CASE 4 : BMS Firmware
+# =====================================================
+def test_bms_fw():
+    path = os.path.join(os.getcwd(), "History", "Firmware+Config_details.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("BMS_FIRMWARE"):
+                return line.split(":")[1].strip()
     return None
 
 
-def test_bms_state_transition(tests_folder):
-    # TODO
+# =====================================================
+# 🔥 TEST CASE 5 : BMS Configuration
+# =====================================================
+def test_bms_config():
+    path = os.path.join(os.getcwd(), "History", "Firmware+Config_details.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("BMS_CONFIG_ID"):
+                return line.split(":")[1].strip()
     return None
 
 
-def test_cell_temp_imbalance(tests_folder):
-    # TODO
+# =====================================================
+# 🔥 TEST CASE 6 : BMS Manifest
+# =====================================================
+def test_bms_manifest():
+    path = os.path.join(os.getcwd(), "History", "Firmware+Config_details.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("BMS_MANIFEST"):
+                return line.split(":")[1].strip()
     return None
 
 
-def test_bms_pcb_temp(tests_folder):
-    # TODO
+# =====================================================
+# 🔥 TEST CASE 7 : BMS Gitsha
+# =====================================================
+def test_bms_gitsha():
+    path = os.path.join(os.getcwd(), "History", "Firmware+Config_details.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("BMS_GITSHA"):
+                return line.split(":")[1].strip()
     return None
 
 
-def test_any_bms_error(tests_folder):
-    # TODO
+# =====================================================
+# 🔥 TEST CASE 8 : Vehicle Drive Mode
+# =====================================================
+def test_vehicle_mode():
+    path = os.path.join(os.getcwd(), "History", "Firmware+Config_details.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("Vehicle_Drive_Mode"):
+                return line.split(":")[1].strip()
     return None
 
 
-def test_flag_full_charge_disable(tests_folder):
-    # TODO
+# =====================================================
+# 🔥 TEST CASE 9 : Payload
+# =====================================================
+def test_payload():
     return None
 
 
-def test_dcli_dclo_map(tests_folder):
-    # TODO
+# =====================================================
+# 🔥 TEST CASE 10 : Vehicle Total Range
+# =====================================================
+def test_vehicle_range():
+    path = os.path.join(os.getcwd(), "History", "Firmware+Config_details.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("DISTANCE_COVERED_KM"):
+                return line.split(":")[1].strip()
     return None
 
+# =====================================================
+# 🔥 TEST CASE 11 : Pack Voltage Range (V)
+# =====================================================
+def test_pack_voltage_range():
+    path = os.path.join(os.getcwd(), "History", "Range+Energy_Capacity.txt")
 
-def test_equivalent_cycle_count(tests_folder):
-    # TODO
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        lines = f.readlines()
+
+    if len(lines) < 2:
+        return None
+
+    line = lines[1]
+
+    for item in line.split(","):
+        if "Pack_Voltage_Range" in item:
+            return item.split(":")[1].replace('"', '').strip()
+
     return None
 
+# ---------------- BUILD ROW ----------------
+def build_row():
+    row = [
+        test_tnv_vehicle(),
+        test_date(),
+        test_bms_hw(),
+        test_bms_fw(),
+        test_bms_config(),
+        test_bms_manifest(),
+        test_bms_gitsha(),
+        test_vehicle_mode(),
+        test_payload(),
+        test_vehicle_range(),
+        test_pack_voltage_range(),
 
-def test_bms_balancing(tests_folder):
-    # TODO
-    return None
+    ]
 
-
-def test_primary_secondary_latch(tests_folder):
-    # TODO
-    return None
-
-
-def test_mcu_obc_error(tests_folder):
-    # TODO
-    return None
-
-
-def test_aux_charge_state_change(tests_folder):
-    # TODO
-    return None
-
-
-def test_soc_voltage_summary(tests_folder):
-    # TODO
-    return None
+    return [row]
 
 
-def test_capacity_check(tests_folder):
-    # TODO
-    return None
-
-
-def test_bms_current_ready_mode(tests_folder):
-    # TODO
-    return None
-
-
-def test_drive_charge_current(tests_folder):
-    # TODO
-    return None
-
-
-# ---------------- BUILD MAIN ROW ----------------
-def build_main_row(meta):
-    return [[
-        meta.get("VEHICLE NAME", "N/A"),
-        meta.get("DATE", "N/A"),
-        meta.get("BMS FIRMWARE", "N/A"),
-        meta.get("BMS CONFIG ID", "N/A"),
-        meta.get("BMS MANIFEST", "N/A"),
-        meta.get("BMS GITSHA", "N/A"),
-
-        # 👇 THESE WILL USE TEST FUNCTIONS LATER
-        "TODO",  # MODE
-        "TODO",  # Payload
-        "TODO",  # Total Range
-        "TODO",  # Range below SoC
-        "TODO",  # Consumed Energy
-        "TODO"   # Regen Energy
-    ]]
-
-
-# ---------------- MAIN FUNCTION ----------------
-def update_full_sheet(meta, tests_folder=DEFAULT_TESTS_FOLDER):
+# ---------------- MAIN ----------------
+def main():
     sheet = get_sheet()
+    reset_sheet(sheet)
 
-    # RESET SHEET
-    reset_sheet_with_header(sheet)
+    row = build_row()
+    end = rowcol_to_a1(2, len(row[0]))
+    sheet.update(f"A2:{end}", row)
 
-    # WRITE DATA
-    sheet.update("A2:L2", build_main_row(meta))
-
-    print("✅ Sheet ready (test slots created)")
+    print("DONE")
 
 
-# ---------------- TEST RUN ----------------
 if __name__ == "__main__":
-    meta = {
-        "VEHICLE NAME": "Test Vehicle",
-        "DATE": "2026-01-01",
-        "BMS FIRMWARE": "01.00.02",
-        "BMS CONFIG ID": "0A.01.2E",
-        "BMS MANIFEST": "XYZ123",
-        "BMS GITSHA": "abc456"
-    }
-
-    update_full_sheet(meta)
+    main()
