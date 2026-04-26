@@ -356,11 +356,18 @@ def save_outputs(summary_df: pd.DataFrame, mode: str, df: pd.DataFrame):
     # summary json
     summary_lines = make_summary_lines(summary_df, mode, res)
     peak_str, avg_str = compute_imbalance(df)
+    vmax_raw = pd.to_numeric(df["Voltage_Max"], errors="coerce")
+    max_spike = vmax_raw.max()
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump({"Summary": summary_lines, "Peak Imbalance": peak_str, "Average Imbalance": avg_str}, f, indent=2)
 
     # save txt in History
-    save_txt(f"{peak_str}\n{avg_str}")
+    txt = (
+        f"{peak_str}\n"
+        f"{avg_str}\n"
+        f"Max Voltage Spike: {max_spike:.0f}mV"
+    )
+    save_txt(txt)
 
     # result json
     with open(result_path, "w", encoding="utf-8") as f:
