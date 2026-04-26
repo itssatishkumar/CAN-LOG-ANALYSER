@@ -194,6 +194,13 @@ df = pd.DataFrame({
 # -----------------------------------------------------
 # MAIN IMBALANCE ANALYSIS
 # -----------------------------------------------------
+global_tmax = -999
+global_tmin = 999
+
+max_delta = 0
+max_delta_tmax = None
+max_delta_tmin = None
+
 fails = []
 warnings = []
 
@@ -243,6 +250,13 @@ for i in range(1, len(df)):
     tmax = max(vals)
     tmin = min(vals)
     imbalance = tmax - tmin
+    global_tmax = max(global_tmax, tmax)
+    global_tmin = min(global_tmin, tmin)
+
+    if imbalance > max_delta:
+        max_delta = imbalance
+        max_delta_tmax = tmax
+        max_delta_tmin = tmin
 
     # Track max imbalance
     if imbalance > max_imbalance_seen:
@@ -349,7 +363,18 @@ with open(summary_path, "w", encoding=OUTPUT_ENCODING) as f:
     json.dump({"Summary_Table": lines}, f, indent=4, ensure_ascii=False)
 
 print(f"Saved: {summary_path}")
+from pathlib import Path
 
+def save_txt(text: str):
+    p = Path(__file__).resolve()
+
+    for parent in [p] + list(p.parents):
+        history = parent / "History"
+        if history.exists() and history.is_dir():
+            file = history / "pcb_temp.txt"
+            with open(file, "w", encoding="utf-8") as f:
+                f.write(text)
+            return
 # -----------------------------------------------------
 # TIMESERIES GRAPH (BMS_PCB_Temp_plot.png)
 # -----------------------------------------------------
@@ -418,5 +443,13 @@ plt.savefig(plot_path, dpi=200, bbox_inches="tight")
 plt.close()
 
 print(f"Saved: {plot_path}")
+txt = (
+    f"PCB Temperature Range: {global_tmin}°C to {global_tmax}°C\n"
+    f"Max Delta: {round(max_delta,3)}°C "
+    f"(Tmax: {max_delta_tmax}°C, "
+    f"Tmin: {max_delta_tmin}°C)"
+)
+
+save_txt(txt)
 print("PROGRESS 100.0", flush=True)
 print("PCB Internal Temperature Imbalance Analysis DONE :)")
