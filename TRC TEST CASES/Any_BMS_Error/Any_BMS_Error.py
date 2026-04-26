@@ -4,6 +4,7 @@ import json
 import re
 from datetime import datetime
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
@@ -516,6 +517,45 @@ with open(summary_path, "w", encoding=OUTPUT_ENCODING) as f:
 
 print(f"Saved: {summary_path}")
 
+# -----------------------------------------------------
+# SAVE BMS ERROR TXT (History folder)
+# -----------------------------------------------------
+def save_txt(text: str):
+    p = Path(__file__).resolve()
+
+    for parent in [p] + list(p.parents):
+        history = parent / "History"
+        if history.exists() and history.is_dir():
+            file = history / "BMS_Error.txt"
+            with open(file, "w", encoding="utf-8") as f:
+                f.write(text)
+            return
+
+txt_lines = []
+
+# All errors first (excluding UV)
+for e in signals_result:
+    if e["Instance_Count"] == 0:
+        continue
+    if e["Name"] == "UV_ERROR":
+        continue
+
+    txt_lines.append(f"{e['Name']} , Instance: {e['Instance_Count']}\n")
+
+# UV at the end
+uv_entry = next((e for e in signals_result if e["Name"] == "UV_ERROR" and e["Instance_Count"] > 0), None)
+
+if uv_entry:
+    txt_lines.append("\n")
+    txt_lines.append("UV Triggered: Yes\n")
+
+    val = uv_entry.get("Value", "")
+    if val:
+        v = val.replace("\n", ", ")
+        txt_lines.append(f"({v})")
+
+txt_content = "".join(txt_lines).strip()
+save_txt(txt_content)
 # -----------------------------------------------------
 # PNG TABLE (Any_BMS_Error_plot.png) – NOT A GRAPH
 # -----------------------------------------------------
