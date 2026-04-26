@@ -303,6 +303,19 @@ prev_soc = soc_arr[max_delta_idx]
 curr_soc = soc_arr[max_delta_idx + 1]
 idx = max_delta_idx
 
+def save_txt(text: str):
+    from pathlib import Path
+
+    p = Path(__file__).resolve()
+
+    for parent in [p] + list(p.parents):
+        history = parent / "History"
+        if history.exists() and history.is_dir():
+            file = history / "SoC.txt"
+            with open(file, "w", encoding="utf-8") as f:
+                f.write(text)
+            return
+
 # -----------------------------------------------------
 # SUMMARY DATA
 summary = {
@@ -316,6 +329,14 @@ summary = {
     "ODO_Stuck_First_SoC": odo_stuck_first_soc,
     "ODO_Stuck_First_Timestamp": odo_stuck_first_ts,
 }
+txt_content = (
+    f"SoC Range : (Initial SoC {summary['Start_SoC']}% & Final SoC {summary['Final_SoC']}%)\n"
+    f"Max SoC Delta : \"{summary['Max_Delta_SoC']}%\"\n"
+    f"Any SoC stuck : "
+    f"{'Yes (' + str(summary['ODO_Stuck_First_SoC']) + '%)' if summary['ODO_SoC_Stuck'] else 'No'}"
+)
+
+save_txt(txt_content)
 
 # -----------------------------------------------------
 # SAVE PASS/FAIL RESULT → SoC_results.json
