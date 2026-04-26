@@ -2,6 +2,7 @@
 import sys, os, re, json
 from datetime import datetime
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
@@ -152,6 +153,24 @@ with open(SUMMARY_FILE, "w") as f:
 # ---------------------------------------------------------------------
 fail_count = sum(1 for r in ready_records if abs(r["current_A"]) > THRESHOLD_A)
 
+# ===== TXT OUTPUT =====
+p = Path(__file__).resolve()
+
+for parent in [p] + list(p.parents):
+    history = parent / "History"
+    if history.exists() and history.is_dir():
+
+        if ready_records:
+            max_current = summary_data["max_current_A"]
+            count = sum(1 for r in ready_records if abs(r["current_A"]) == abs(max_current))
+            text = f"Current in READY mode: {abs(max_current):.5f} A | FAILURE COUNT : {fail_count}"
+        else:
+            text = "Current in ready mode: N/A"
+
+        file = history / "contactor_weld.txt"
+        with open(file, "w", encoding="utf-8") as f:
+            f.write(text)
+        break
 # ---------------------------------------------------------------------
 # PASS / FAIL LOGIC
 # ---------------------------------------------------------------------
