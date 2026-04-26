@@ -32,6 +32,15 @@ HEADERS = [
     "Payload (kg)",
     "Vehicle Total Range (km)",
     "Pack Voltage Range (V)",
+    "Range Below SoC 1%",
+    "Total Drive Energy/Capacity (Wh/Ah)",
+    "Consumed Energy/Capacity (From Battery Wh)",
+    "Regen Energy/Capacity (Wh/Ah)",
+    "Peak Imbalance (mV) (Vmin, Vmax & SoC)",
+    "Average Imbalance (mV)",
+    "Temperature Range (ENTIRE CYCLE)",
+    "Temp Delta (Max at particular instant) @SoC"
+
 ]
 
 def reset_sheet(sheet):
@@ -217,6 +226,158 @@ def test_pack_voltage_range():
 
     return None
 
+# =====================================================
+# 🔥 TEST CASE 12 : Range Below SoC (1%)
+# =====================================================
+def test_range_below_soc_1():
+    path = os.path.join(os.getcwd(), "History", "Range+Energy_Capacity.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        for line in f:
+            if "Range_Below_SoC_1_percent_km" in line:
+                return line.split(":")[1].replace('"', '').replace(',', '').strip()
+
+    return None
+
+# =======================================================================
+# 🔥 TEST CASE 13 : Total Drive Energy/Capacity (Regen + BatteryPack Wh)
+# =======================================================================
+def test_total_drive_energy_capacity():
+    path = os.path.join(os.getcwd(), "History", "Range+Energy_Capacity.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    total_energy = None
+    total_capacity = None
+
+    with open(path) as f:
+        for line in f:
+            if "Total_Energy_Wh" in line:
+                total_energy = float(line.split(":")[1].replace('"', '').replace(',', '').strip())
+            if "Total_Capacity_Ah" in line:
+                total_capacity = float(line.split(":")[1].replace('"', '').replace(',', '').strip())
+
+    if total_energy is not None and total_capacity is not None:
+        return f"{total_energy} Wh / {total_capacity} Ah"
+
+    return None
+
+# =====================================================
+# 🔥 TEST CASE 14 : Consumed Energy/Capacity (From Battery Wh)
+# =====================================================
+def test_consumed_energy_capacity():
+    path = os.path.join(os.getcwd(), "History", "Range+Energy_Capacity.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    battery_energy = None
+    battery_capacity = None
+
+    with open(path) as f:
+        for line in f:
+            if "Battery_Energy_Wh" in line:
+                battery_energy = float(line.split(":")[1].replace('"', '').replace(',', '').strip())
+            if "Battery_Capacity_Ah" in line:
+                battery_capacity = float(line.split(":")[1].replace('"', '').replace(',', '').strip())
+
+    if battery_energy is not None and battery_capacity is not None:
+        return f"{battery_energy} Wh / {battery_capacity} Ah"
+
+    return None
+
+# =====================================================
+# 🔥 TEST CASE 15 : Regen Energy/Capacity (Wh)
+# =====================================================
+def test_regen_energy_capacity():
+    path = os.path.join(os.getcwd(), "History", "Range+Energy_Capacity.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    regen_energy = None
+    regen_capacity = None
+
+    with open(path) as f:
+        for line in f:
+            if "Regen_Energy_Wh" in line:
+                regen_energy = float(line.split(":")[1].replace('"', '').replace(',', '').strip())
+            if "Regen_Capacity_Ah" in line:
+                regen_capacity = float(line.split(":")[1].replace('"', '').replace(',', '').strip())
+
+    if regen_energy is not None and regen_capacity is not None:
+        return f"{regen_energy} Wh / {regen_capacity} Ah"
+
+    return None
+
+# =====================================================
+# 🔥 TEST CASE 16 : Peak Imbalance (mV) (Vmin, Vmax & SoC)
+# =====================================================
+def test_peak_imbalance():
+    path = os.path.join(os.getcwd(), "History", "imbalance.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("Peak Imbalance"):
+                return line.split(":", 1)[1].strip()
+
+    return None
+
+# =====================================================
+# 🔥 TEST CASE 17 : Average Imbalance (mV)
+# =====================================================
+def test_average_imbalance():
+    path = os.path.join(os.getcwd(), "History", "imbalance.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("Average Imbalance"):
+                return line.split(":", 1)[1].strip()
+
+    return None
+
+# =====================================================
+# 🔥 TEST CASE 18 : Temperature Range (ENTIRE CYCLE)
+# =====================================================
+def test_temp_range_entire_cycle():
+    path = os.path.join(os.getcwd(), "History", "temp_data.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if line.startswith("Temperature Range"):
+                return line.split(":", 1)[1].strip()
+
+    return None
+
+# =====================================================
+# 🔥 TEST CASE 19 : Tmp Delta (Max at particular instant) @SoC
+# =====================================================
+def test_temp_delta_at_soc():
+    path = os.path.join(os.getcwd(), "History", "temp_data.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if line.startswith("Max Delta"):
+                return line.split(":", 1)[1].strip()
+
+    return None
+
 # ---------------- BUILD ROW ----------------
 def build_row():
     row = [
@@ -231,7 +392,14 @@ def build_row():
         test_payload(),
         test_vehicle_range(),
         test_pack_voltage_range(),
-
+        test_range_below_soc_1(),
+        test_total_drive_energy_capacity(),
+        test_consumed_energy_capacity(),
+        test_regen_energy_capacity(),
+        test_peak_imbalance(),
+        test_average_imbalance(),
+        test_temp_range_entire_cycle(),
+        test_temp_delta_at_soc()
     ]
 
     return [row]
