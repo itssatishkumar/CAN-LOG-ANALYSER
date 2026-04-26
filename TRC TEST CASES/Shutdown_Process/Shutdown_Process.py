@@ -588,6 +588,42 @@ def main():
         )
 
     save_json(cycles, filepath)
+
+    # ===== SHUTDOWN TXT OUTPUT =====
+    p = Path(__file__).resolve()
+
+    for parent in [p] + list(p.parents):
+        history = parent / "History"
+        if history.exists() and history.is_dir():
+
+            if not cycles:
+                text = "No shutdown event"
+            else:
+                any_fail = any(c.get("Final") == "FAIL" for c in cycles)
+
+                if any_fail:
+                    text = "FAIL"
+                else:
+                    ack_times = []
+                    for c in cycles:
+                        at = c.get("ACK_Time")
+                        if at and at != "MISS":
+                            try:
+                                ack_times.append(float(at.replace("s", "")))
+                            except:
+                                pass
+
+                    if ack_times:
+                        max_ack = max(ack_times)
+                        text = f"PASS, Valid Shutdown, Max ACK Time: {max_ack:.3f}s"
+                    else:
+                        text = "PASS, Valid Shutdown, Max ACK Time: N/A"
+
+            file = history / "shutdown.txt"
+            with open(file, "w", encoding="utf-8") as f:
+                f.write(text)
+            break
+
     print("PROGRESS 100.0", flush=True)
 
 
