@@ -218,7 +218,7 @@ def process_trc(
 
                 bms_seen += 1
 
-    return (best_between_val, best_between_ts), (best_all_val, best_all_ts), bms_plot_rows
+    return (best_between_val, best_between_ts), (best_all_val, best_all_ts), bms_plot_rows, best_all_val
 
 
 def build_plot_df(rows: list[dict]) -> pd.DataFrame:
@@ -361,7 +361,6 @@ def save_outputs(result: str, summary_text: str, plot_df: pd.DataFrame):
 
     return str(result_path), str(summary_path), str(graph_path)
 
-
 def main():
     trc_path = get_trc_path_from_gui_or_browse()
     print(f"Using TRC file: {trc_path}")
@@ -369,12 +368,55 @@ def main():
 
     progress_cb = progress_by_bytes(trc_path, step=PROGRESS_STEP)
 
-    (min_between, ts_between), (min_all, ts_all), plot_rows = process_trc(
+    (min_between, ts_between), (min_all, ts_all), plot_rows, _ = process_trc(
         trc_path,
         PLOT_SAMPLE_EVERY,
         progress_cb=progress_cb,
     )
     plot_df = build_plot_df(plot_rows)
+
+    # ===== Aux Voltage TXT OUTPUT =====
+    p = Path(__file__).resolve()
+
+    for parent in [p] + list(p.parents):
+        history = parent / "History"
+        if history.exists() and history.is_dir():
+
+            aux_series = plot_df["AuxVoltage_V"].dropna()
+            aux_max = aux_series.max() if not aux_series.empty else 0
+
+            # Use true minimum
+            if min_all is not None and min_all > 0:
+                aux_min = min_all
+            else:
+                aux_min = 0
+
+            # Correct count from FULL data
+            count = 0
+            if min_all is not None and min_all > 0:
+                with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        p_line = parse_trc_line(line)
+                        if not p_line:
+                            continue
+                        _, canid, dlc, data = p_line
+                        if canid == AUXV_CAN_ID and dlc >= AUXV_MSB_IDX + 2:
+                            v = decode_0606_auxv(data)
+                            if v > 0 and round(v, 2) == round(min_all, 2):
+                                count += 1
+
+            if min_all is not None:
+                text = (
+                    f"Aux Voltage Range : {aux_min:.2f}V to {aux_max:.2f}V\n"
+                    f"Lowest Aux Voltage : {min_all:.2f}V ({count} count)"
+                )
+            else:
+                text = "Aux Voltage Range : N/A\nLowest Aux Voltage : N/A"
+
+            file = history / "Aux_voltage.txt"
+            with open(file, "w", encoding="utf-8") as f:
+                f.write(text)
+            break
 
     if min_between is None:
         line1 = f"Min AuxVoltage between 0109(3->3) is N/A, Timestamp: N/A (PASS CONDITION {THRESH_BETWEEN_3_TO_3}V)"
