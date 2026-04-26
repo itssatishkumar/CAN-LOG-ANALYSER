@@ -1160,10 +1160,14 @@ def main():
     total_energy_wh = integrate_energy(current_list, voltage_list)
     # ---- VOLTAGE RANGE ----
     if voltage_list:
-        voltages = [v for _, v in voltage_list]
-        max_v = max(voltages)
-        min_v = min(voltages)
-        voltage_range_str = f"{max_v:.1f}V to {min_v:.1f}V"
+        voltages = [v for _, v in voltage_list if v > 0]
+        if voltages:
+            max_v = max(voltages)
+            min_v = min(voltages)
+            voltage_range_str = f"{max_v:.1f}V to {min_v:.1f}V"
+        else:
+            max_v = min_v = None
+            voltage_range_str = "N/A"
     else:
         max_v = min_v = None
         voltage_range_str = "N/A"
