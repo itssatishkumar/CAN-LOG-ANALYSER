@@ -190,6 +190,16 @@ def format_duration(seconds: float) -> str:
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
 
+def save_txt(text: str):
+    p = Path(__file__).resolve()
+
+    for parent in [p] + list(p.parents):
+        history = parent / "History"
+        if history.exists() and history.is_dir():
+            file = history / "Current_Profile.txt"
+            with open(file, "w", encoding="utf-8") as f:
+                f.write(text)
+            return
 
 def compute_overcurrent_instances(
     timestamps, currents, dl_ts, dlco_vals, soc_ts, soc_vals
@@ -424,7 +434,7 @@ def main():
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
 
-    # ---------- SUMMARY JSON WITH OVER-CURRENT INSTANCES ----------
+        # ---------- SUMMARY JSON WITH OVER-CURRENT INSTANCES ----------
     summary_path = out_dir / "DCLI_DCLO_Map_summary.json"
 
     overall_summary = {
@@ -460,6 +470,77 @@ def main():
         }
     }
     summary_path.write_text(json.dumps(summary_payload, indent=4), encoding="utf-8")
+
+    # ---- BUILD TXT CONTENT ----
+    neg_currents = [c for c in currents if c < 0]
+    avg_discharge = sum(neg_currents) / len(neg_currents) if neg_currents else 0
+
+    txt_lines = []
+    txt_lines.append(f"Average Discharge Current : {avg_discharge:.0f}A\n")
+    txt_lines.append(f"Peak Discharge current : {min(currents):.0f}A\n")
+
+    txt_lines.append("\nPeak Discharge current :")
+    for inst in instance_rows:
+        txt_lines.append(
+            f'"Instance": {inst["Instance"]}, "Duration": "{inst["Duration"]}",'
+            f'"DCLO": "{inst["DCLO"]}","PackCurrentAverage": "{inst["PackCurrentAverage"]}",'
+            f'"SoC": "{inst["SoC"]}"'
+        )
+
+    # ---- REGEN FROM RAW POSITIVE CURRENT ----
+    pos_samples = [(t, c) for t, c in zip(timestamps, currents) if t is not None and c > 0]
+    soc_samples = [(t, s) for t, s in zip(soc_ts, soc_vals) if t is not None]
+    soc_samples.sort(key=lambda x: x[0])
+    soc_idx = 0
+    last_soc = None
+    dl_samples = [(t, d) for t, d in zip(dl_ts, dlci_vals) if t is not None]
+    dl_samples.sort(key=lambda x: x[0])
+    dl_idx = 0
+    last_dcli = None
+
+    regen_events = []
+    i = 0
+    n = len(pos_samples)
+
+    while i < n:
+        start_t, _ = pos_samples[i]
+
+        while dl_idx < len(dl_samples) and dl_samples[dl_idx][0] <= start_t:
+            last_dcli = dl_samples[dl_idx][1]
+            dl_idx += 1
+        sum_i = 0.0
+        count = 0
+
+        j = i
+        while j < n and (pos_samples[j][0] - pos_samples[i][0]).total_seconds() <= 1:
+            sum_i += pos_samples[j][1]
+            count += 1
+            j += 1
+
+        end_t = pos_samples[j - 1][0]
+        duration = (end_t - start_t).total_seconds()
+
+        regen_events.append({
+            "duration_sec": duration,
+            "avg_current": sum_i / count if count else 0,
+            "soc_start": last_soc,
+            "dcli": last_dcli
+    })
+
+        i = j
+
+    regen_sorted = sorted(regen_events, key=lambda x: x["avg_current"], reverse=True)[:3]
+
+    txt_lines.append("\n\nPeak Regen Current and Duration")
+
+    for idx, inst in enumerate(regen_sorted, start=1):
+        txt_lines.append(
+            f'"Instance": {idx}, "Duration": "{format_duration(inst["duration_sec"])}",'
+            f'"Instance": {idx}, "Duration": "{format_duration(inst["duration_sec"])}","DCLI": "{(f"{inst["dcli"]:.0f}") if inst["dcli"] is not None else ""}","PackCurrentAverage": "{inst["avg_current"]:.0f}A","SoC": "{(f"{inst["soc_start"]:.2f}%") if inst["soc_start"] is not None else ""}"'
+        )
+
+    txt_content = "\n".join(txt_lines)
+    save_txt(txt_content)
 
     # Result JSON just indicates script run success
     result_path = out_dir / "DCLI_DCLO_Map_results.json"
