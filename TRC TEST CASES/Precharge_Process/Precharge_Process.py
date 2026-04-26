@@ -204,7 +204,6 @@ for i in range(1, len(df)):
 
         in_precharge = False
 
-
 # -----------------------------------------------------
 # SAVE RESULTS JSON
 # -----------------------------------------------------
@@ -223,6 +222,51 @@ else:
 with open(os.path.join(folder, "Precharge_Process_results.json"), "w", encoding="utf-8") as f:
     json.dump({"Result": overall, "Events": events}, f, indent=4)
 
+# ===== PRECHARGE TXT OUTPUT =====
+from pathlib import Path
+
+p = Path(__file__).resolve()
+
+for parent in [p] + list(p.parents):
+    history = parent / "History"
+    if history.exists() and history.is_dir():
+
+        if not events:
+            text = "No precharge session"
+
+        else:
+            if overall == "FAIL":
+                max_event = max(events, key=lambda e: e["Duration (s)"])
+                max_time = max_event["Duration (s)"]
+
+                text = (
+                    f"FAIL\n"
+                    f"Max Precharge Process Time : {max_time:.2f}s"
+                )
+
+            elif overall == "WARNING":
+                max_event = max(events, key=lambda e: e["Duration (s)"])
+                max_time = max_event["Duration (s)"]
+
+                text = (
+                    f"WARNING\n"
+                    f"Max Precharge Process Time : {max_time:.2f}s"
+                )
+
+            else:  # PASS
+                max_event = max(events, key=lambda e: e["Duration (s)"])
+                max_time = max_event["Duration (s)"]
+                max_current = max_event["Max_Current (A)"]
+
+                text = (
+                    f"Precharge Process check : PASS, {max_current:.2f}A\n"
+                    f"Max Precharge Process Time : {max_time:.2f}s"
+                )
+
+        file = history / "Precharge.txt"
+        with open(file, "w", encoding="utf-8") as f:
+            f.write(text)
+        break
 
 # -----------------------------------------------------
 # ASCII SUMMARY JSON
@@ -256,7 +300,6 @@ for e in events:
 
 with open(os.path.join(folder, "Precharge_Process_summary.json"), "w", encoding="utf-8") as f:
     json.dump({"Summary_Table": table_lines}, f, indent=4)
-
 
 # -----------------------------------------------------
 # PNG TABLE (dynamic height)
