@@ -369,7 +369,7 @@ def save_outputs(summary_df: pd.DataFrame, mode: str, df: pd.DataFrame):
     summary_lines = make_summary_lines(summary_df, mode, res)
     peak_str, avg_str = compute_imbalance(df)
     vmax_raw = pd.to_numeric(df["Voltage_Max"], errors="coerce")
-    max_spike = vmax_raw.max()
+    max_recorded = vmax_raw.max()
     state_series = df.get("Vehicle_State", None)
     mode_str = "NA"
     if state_series is not None:
@@ -393,7 +393,7 @@ def save_outputs(summary_df: pd.DataFrame, mode: str, df: pd.DataFrame):
     txt = (
         f"{peak_str}\n"
         f"{avg_str}\n"
-        f"Max Voltage Spike: {max_spike:.0f}mV\n"
+        f"Max Voltage recorded: {max_recorded:.0f}mV\n"
         f"Vehicle Mode: ({mode_str})"
     )
     save_txt(txt)
