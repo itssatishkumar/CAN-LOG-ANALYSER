@@ -546,8 +546,8 @@ for e in signals_result:
 uv_entry = next((e for e in signals_result if e["Name"] == "UV_ERROR" and e["Instance_Count"] > 0), None)
 
 if uv_entry:
-    txt_lines.append("\n")
-    txt_lines.append("UV Triggered: Yes\n")
+    txt_lines.append(f"UV_ERROR , Instance: {uv_entry['Instance_Count']}")
+    txt_lines.append("\n\nUV Triggered: Yes\n")
 
     val = uv_entry.get("Value", "")
     if val:
