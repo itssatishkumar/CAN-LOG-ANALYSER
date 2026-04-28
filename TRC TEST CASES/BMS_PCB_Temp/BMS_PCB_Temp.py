@@ -84,6 +84,7 @@ bms_state = 0
 # -----------------------------------------------------
 # PARSE TRC
 # -----------------------------------------------------
+min_zero_streak = 0
 with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
     for line_idx, line in enumerate(f, 1):
 
@@ -118,6 +119,14 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
             temp_max = s8(data[3])
             temp_min = s8(data[4])
             temp_delta = s8(data[5])
+
+            # Apply 15-streak rule on Tmin
+            if temp_min == 0:
+                min_zero_streak += 1
+                if min_zero_streak < 15:
+                    continue
+            else:
+                min_zero_streak = 0
 
             if reported_int_delta is None or temp_delta > reported_int_delta:
                 reported_int_delta = temp_delta
@@ -236,7 +245,7 @@ for i in range(1, len(df)):
 
         if val == 0:
             zero_streak[ntc_idx] += 1
-            if zero_streak[ntc_idx] < 3:
+            if zero_streak[ntc_idx] < 15:
                 temps_valid = False
         else:
             zero_streak[ntc_idx] = 0
@@ -395,7 +404,7 @@ for _, row in df.iterrows():
 
         elif val == 0:
             plot_zero_streak[ntc_idx] += 1
-            plot_value = 0 if plot_zero_streak[ntc_idx] >= 3 else None
+            plot_value = 0 if plot_zero_streak[ntc_idx] >= 15 else None
         else:
             plot_zero_streak[ntc_idx] = 0
             plot_value = val
