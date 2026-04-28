@@ -211,8 +211,21 @@ def test_vehicle_mode():
 # 🔥 TEST CASE 9 : Payload
 # =====================================================
 def test_payload():
-    return None
+    import re
 
+    path = os.path.join(os.getcwd(), "History", "vehicle_details.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        content = f.read()
+
+    match = re.search(r'(\d+)\s*kg', content, re.IGNORECASE)
+    if match:
+        return f"{match.group(1)} kg"
+
+    return None
 
 # =====================================================
 # 🔥 TEST CASE 10 : Vehicle Total Range
