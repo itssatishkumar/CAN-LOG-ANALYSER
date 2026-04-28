@@ -2,6 +2,8 @@ import os
 import gspread
 from google.oauth2.service_account import Credentials
 from gspread.utils import rowcol_to_a1
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
 
 # ---------------- CONFIG ----------------
 SPREADSHEET_ID = "1nDkL93epR1RQfFvCrzAVeiu5a9TpaU2484sOaVkQAQw"
@@ -739,12 +741,13 @@ def test_pcb_temp_range():
     if not os.path.exists(path):
         return None
 
-    with open(path) as f:
+    with open(path, encoding="utf-8", errors="ignore") as f:
         for line in f:
             if "PCB Temperature Range" in line:
-                return line.split(":", 1)[1].strip()
+                return line.split(":", 1)[1].strip().replace("Â", "")
 
     return None
+
 
 # =====================================================
 # 🔥 TEST CASE 39 : PCB Temp Delta
@@ -755,13 +758,13 @@ def test_pcb_temp_delta():
     if not os.path.exists(path):
         return None
 
-    with open(path) as f:
+    with open(path, encoding="utf-8", errors="ignore") as f:
         lines = f.readlines()
 
     if len(lines) >= 2:
         line = lines[1]
         if "Max Delta" in line:
-            return line.split(":", 1)[1].strip()
+            return line.split(":", 1)[1].strip().replace("Â", "")
 
     return None
 
@@ -902,7 +905,64 @@ def build_row():
 
     return [row]
 
+def save_to_excel(row):
+    wb = Workbook()
+    ws = wb.active
 
+    ws.append(HEADERS)
+    ws.append(row[0])
+
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="28A745", end_color="28A745", fill_type="solid")
+    center_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True, shrink_to_fit=True)
+
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    # Header styling
+    for col in range(1, len(HEADERS) + 1):
+        cell = ws.cell(row=1, column=col)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_alignment
+        cell.border = thin_border
+
+    # Data styling
+    for col in range(1, len(HEADERS) + 1):
+        cell = ws.cell(row=2, column=col)
+        cell.alignment = center_alignment
+        cell.border = thin_border
+
+    # Auto column width with cap
+    for col in ws.columns:
+        max_length = 0
+        col_letter = col[0].column_letter
+
+        for cell in col:
+            if cell.value:
+                max_length = max(max_length, len(str(cell.value)))
+
+        adjusted_width = min(max_length + 2, 40)
+        ws.column_dimensions[col_letter].width = adjusted_width
+
+    # Force width for specific columns
+    target_headers = [
+        "Peak Discharge Current and Duration",
+        "Peak Regen Current and Duration"
+    ]
+
+    for col_idx, header in enumerate(HEADERS, start=1):
+        if header in target_headers:
+            col_letter = ws.cell(row=1, column=col_idx).column_letter
+            ws.column_dimensions[col_letter].width = 80
+
+    wb.save("TRACKER.xlsx")
 # ---------------- MAIN ----------------
 def main():
     sheet = get_sheet()
@@ -912,6 +972,7 @@ def main():
     end = rowcol_to_a1(2, len(row[0]))
     sheet.update(f"A2:{end}", row)
 
+    save_to_excel(row)
     print("DONE")
 
 
