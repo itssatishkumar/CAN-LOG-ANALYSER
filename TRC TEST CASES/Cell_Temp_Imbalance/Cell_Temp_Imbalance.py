@@ -149,7 +149,21 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
 
             if pending_014E:
                 if prev_bms_state != 0 and last_bms_state != 0:
+
+                    # Initialize streak tracker (once)
+                    if 'min_zero_streak' not in locals():
+                        min_zero_streak = 0
+
                     for max_v, min_v, delta_v, ts_v in pending_014E:
+
+                        # Apply 15-streak rule on Tmin
+                        if min_v == 0:
+                            min_zero_streak += 1
+                            if min_zero_streak < 15:
+                                continue
+                        else:
+                            min_zero_streak = 0
+
                         reported_max_vals.append(max_v)
                         reported_min_vals.append(min_v)
                         reported_delta_vals.append(delta_v)
@@ -277,7 +291,7 @@ for i in range(1, len(df)):
 
         if val == 0:
             zero_streak[ntc_idx] += 1
-            if zero_streak[ntc_idx] < 3:
+            if zero_streak[ntc_idx] < 15:
                 temps_valid = False
         else:
             zero_streak[ntc_idx] = 0
@@ -460,7 +474,7 @@ for i, arr in enumerate(df["temps"]):
 
         elif val == 0:
             plot_zero_streak[ntc_idx] += 1
-            plot_value = 0 if plot_zero_streak[ntc_idx] >= 3 else None
+            plot_value = 0 if plot_zero_streak[ntc_idx] >= 15 else None
 
         else:
             plot_zero_streak[ntc_idx] = 0
