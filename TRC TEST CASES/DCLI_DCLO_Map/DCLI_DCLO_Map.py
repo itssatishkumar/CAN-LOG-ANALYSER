@@ -182,8 +182,10 @@ def build_soc_axis(ax, soc_x, soc_vals, label="SoC (%)"):
 
 
 def format_duration(seconds: float) -> str:
-    if seconds <= 0 or seconds != seconds:  # NaN check
+    if seconds != seconds:  # NaN check
         return ""
+    if seconds < 1:
+        return "<1s"
     seconds = int(round(seconds))
     h = seconds // 3600
     m = (seconds % 3600) // 60
@@ -508,11 +510,15 @@ def main():
         while dl_idx < len(dl_samples) and dl_samples[dl_idx][0] <= start_t:
             last_dcli = dl_samples[dl_idx][1]
             dl_idx += 1
+
+        while soc_idx < len(soc_samples) and soc_samples[soc_idx][0] <= start_t:
+            last_soc = soc_samples[soc_idx][1]
+            soc_idx += 1
         sum_i = 0.0
         count = 0
 
         j = i
-        while j < n and (pos_samples[j][0] - pos_samples[i][0]).total_seconds() <= 1:
+        while j < n and (pos_samples[j][0] - pos_samples[i][0]).total_seconds() < 2:
             sum_i += pos_samples[j][1]
             count += 1
             j += 1
@@ -536,9 +542,10 @@ def main():
     for idx, inst in enumerate(regen_sorted, start=1):
         txt_lines.append(
             f'"Instance": {idx}, "Duration": "{format_duration(inst["duration_sec"])}",'
-            f'"Instance": {idx}, "Duration": "{format_duration(inst["duration_sec"])}","DCLI": "{(f"{inst["dcli"]:.0f}") if inst["dcli"] is not None else ""}","PackCurrentAverage": "{inst["avg_current"]:.0f}A","SoC": "{(f"{inst["soc_start"]:.2f}%") if inst["soc_start"] is not None else ""}"'
-        )
-
+            f'"DCLI": "{(f"{inst["dcli"]:.0f}") if inst["dcli"] is not None else ""}",'
+            f'"PackCurrent": "{inst["avg_current"]:.0f}A",'
+            f'"SoC": "{(f"{inst["soc_start"]:.2f}%") if inst["soc_start"] is not None else ""}"'
+    )
     txt_content = "\n".join(txt_lines)
     save_txt(txt_content)
 
