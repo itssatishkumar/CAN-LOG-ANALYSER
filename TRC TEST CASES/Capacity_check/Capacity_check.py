@@ -1275,7 +1275,7 @@ def main():
     history_file = history_folder / "Range+Energy_Capacity.txt"
 
     with open(history_file, "w") as f:
-        f.write(f'"Range_Below_SoC_1_percent_km": "{dist_after_low_soc:.2f}",\n')
+        f.write(f'"Range_Below_SoC_1_percent_km": "{dist_after_low_soc:.2f}",\n' if dist_after_low_soc is not None else '"Range_Below_SoC_1_percent_km": "N/A",\n')
         f.write(f'"Pack_Voltage_Range": "{voltage_range_str}",\n')
         f.write(f'"Total_Capacity_Ah": "{stats["exchange_ah"]:.4f}",\n')
         f.write(f'"Total_Energy_Wh": "{total_energy_wh:.2f}",\n')
