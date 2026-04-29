@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "octopusautomation-470917",
+  "private_key_id": "e7e9e1ea55653ffbbe0721cad06f48435f47d137",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC/LEsV7eW0Yp1Y\nzMYJtO19lRP1uLCZBcfYMW9KGDHFR88lJyDBcX8jMxSHRTxwueuPmbRtODHkvj1A\n5Ix7wWDKUTVu3/7IZce39uU9WyTlwyl1K1ZB20SupNz16zxPCZoz9uJ9R8aaxg06\nRvYKHGNWXXjLIYydE7em98aoEB6cRcE1d+/mhJ0CPdH4qcBhDtv2Us3X15lbacdm\nNixVGFl99aG7RlJef8PuKdiWkzG6xZ9ogREcbJYQvwb8MxR1UluPduWSMmwr1N1u\nvZWd1QXNxQPHToPhDveYvz3SyFUvPvbTs09CvDXjewdR0MewyOh3OEei9Yj/ZwhG\nKn9/rDqtAgMBAAECggEALAYTNHWYVDXxbiWZ5VpY5naSJh/l6xc9sjeQHUv9CiVD\nOpcMH//2+zAkJhJ3nK3z5RnMRuqN8tMsX+lBwK4DkBOrbmD+1z85AtBEciCvGooa\n3fSg5IGOC3nDuI33UWwwqo7MEXWZ8sJxAV6eAi4PYjAcRQrwyqtju3uLr+AmbG3t\nGs1JdRkNPQ2ny/WMnB+CGKJLiwLZ5RTEX1qT4Npz1n0nCrDwG9HTsSTIpPxpQ19B\nINSX70b1P0Pv1ykmdFWUquJRlYWOzIhlXpeA+RvElxcsyl5T1x1TZvNLa65wLb4l\nCLNe/1Eg+Cnaw1l4B7E2wJ7yEl1gjOD179JEkkldMQKBgQD7a1u6mXoBh9R2ae39\nrXhuWIaRJ0WKFFX83CKFcDEEZLQgd8LG/8tyYOw1AW0GkVWWmm6ZqfsCuq0UXcre\nSKhGtVRLOp24VaVJXjhJD77HilOMJtiVXeKzDqv/b1AKTZtecPHkuVn1Zu8P5huw\neu8XPJ93+tsiHR0jFgq0r9ccdwKBgQDCp/DY6nrcPV1myxj6PiLosd/6g2jKi9Uj\n9tvkTvt46GL/Q8kcjqRQamzmhWPOe1MNwbGy4uQHzD7hQ6yT2dF8UPVoEU1i2wRT\nSNJiddoH7z6mNsO4AQQOuq2hmncS1XRS/oiQAyxfrQMP9lJyUFv7IR/Juz8PQCsL\nGmiW1DW++wKBgEhTYQb0AcIQ9hC+dmVEkuGDe+qj1oBbS0U7en7SgHdYFO1GJnUi\nvr7/nNO+vkNmaa2ybWCtInVtiD7UoHiDhE0a+s3NZfPSR4MspJp3+hTi+RfXUPTf\nFkkWTmpj9i2Ql8J6UUvP+k37N4hmVM7W/pK7sNBODN3qbChcveWus/4PAoGAdQ0p\n/jZZ9PANp09/0JLmyQiVR/4XWJznaT37knmQLG+JgDhRyhNYaWbl32Tc1IBCPCZ6\nZbicKLhAI5NfRnUXzGqed5rX7xcGrdI/eKenmVfbU3XhEVfDCdxlpqTM741d6r5W\nfkr6NvpBuiqD/2ulNAkCJXuses46U+3ocLJhM1sCgYEAs/hktXNKwfVY2J0iuZWV\nK5jr75x0yRvm2qU7BGgRhdaA7aoqEVH8+lS9GBh4KNyhgwGTtGHqRetW55VhcV8D\nAOr6Ni1sK2hS4NKjeQNbNtE3beLUobXTW9/qtx3yCFFashrsDt4u8TbFvT/Tw0Nx\nCfajReP24ykLusqAlHtJnms=\n-----END PRIVATE KEY-----\n",
+  "client_email": "tracker-bot@octopusautomation-470917.iam.gserviceaccount.com",
+  "client_id": "107287911333597693820",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/tracker-bot%40octopusautomation-470917.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
