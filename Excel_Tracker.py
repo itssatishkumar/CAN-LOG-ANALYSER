@@ -70,7 +70,12 @@ HEADERS = [
 ]
 
 def reset_sheet(sheet):
-    sheet.clear()
+    existing = sheet.get_all_values()
+
+    # If sheet already has data, do NOT clear or overwrite
+    if existing:
+        return
+
     end = rowcol_to_a1(1, len(HEADERS))
     sheet.update(f"A1:{end}", [HEADERS])
 
@@ -956,7 +961,6 @@ def save_to_excel(row):
         bottom=Side(style='thin')
     )
 
-    # Header styling
     for col in range(1, len(HEADERS) + 1):
         cell = ws.cell(row=1, column=col)
         cell.font = header_font
@@ -964,13 +968,11 @@ def save_to_excel(row):
         cell.alignment = center_alignment
         cell.border = thin_border
 
-    # Data styling
     for col in range(1, len(HEADERS) + 1):
         cell = ws.cell(row=2, column=col)
         cell.alignment = center_alignment
         cell.border = thin_border
 
-    # Auto column width with cap
     for col in ws.columns:
         max_length = 0
         col_letter = col[0].column_letter
@@ -982,7 +984,6 @@ def save_to_excel(row):
         adjusted_width = min(max_length + 2, 40)
         ws.column_dimensions[col_letter].width = adjusted_width
 
-    # Force width for specific columns
     target_headers = [
         "Peak Discharge Current and Duration",
         "Peak Regen Current and Duration"
@@ -994,17 +995,48 @@ def save_to_excel(row):
             ws.column_dimensions[col_letter].width = 80
 
     wb.save("TRACKER.xlsx")
+
+
 # ---------------- MAIN ----------------
 def main():
-    sheet = get_sheet()
-    reset_sheet(sheet)
-
     row = build_row()
-    end = rowcol_to_a1(2, len(row[0]))
-    sheet.update(f"A2:{end}", row)
+
+    try:
+        sheet = get_sheet()
+        reset_sheet(sheet)
+        end = rowcol_to_a1(2, len(row[0]))
+        sheet.update(f"A2:{end}", row)
+    except Exception:
+        # Ignore ONLY if Google/JSON related fails
+        pass
 
     save_to_excel(row)
     print("DONE")
+
+    import sys
+    import subprocess
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    app = QApplication(sys.argv)
+
+    reply = QMessageBox.question(
+        None,
+        "Excel Tracker",
+        "TRACKER.xlsx created successfully.\n\nDo you want to open it?",
+        QMessageBox.Yes | QMessageBox.No,
+        QMessageBox.Yes,
+    )
+
+    if reply == QMessageBox.Yes:
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile("TRACKER.xlsx")
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "TRACKER.xlsx"])
+            else:
+                subprocess.Popen(["xdg-open", "TRACKER.xlsx"])
+        except Exception as e:
+            QMessageBox.warning(None, "Error", f"Failed to open file:\n{e}")
 
 
 if __name__ == "__main__":
