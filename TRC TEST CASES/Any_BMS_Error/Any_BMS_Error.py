@@ -554,9 +554,24 @@ if uv_entry:
         v = val.replace("\n", ", ")
         txt_lines.append(f"({v})")
 
-txt_content = "".join(txt_lines).strip()
+else:
+    if not txt_lines:
+        txt_lines.append("No Error\n")
+
+    txt_lines.append("\nUV Triggered: NO\n")
+
+    if global_min_v_sample is not None:
+        vmin = global_min_v_sample.get("Vmin")
+        vmax = global_min_v_sample.get("Vmax")
+        soc  = global_min_v_sample.get("SoC")
+        val = build_context_value(vmin, vmax, soc)
+        if val:
+            v = val.replace("\n", ", ")
+            txt_lines.append(f"({v})")
+
+txt_content = "".join(txt_lines).rstrip()
 save_txt(txt_content)
-# -----------------------------------------------------
+#------------------------------------------------------
 # PNG TABLE (Any_BMS_Error_plot.png) – NOT A GRAPH
 # -----------------------------------------------------
 headers = ["ERROR Signal", "Status", "Instance", "Fail Timestamp(s)", "Value"]
