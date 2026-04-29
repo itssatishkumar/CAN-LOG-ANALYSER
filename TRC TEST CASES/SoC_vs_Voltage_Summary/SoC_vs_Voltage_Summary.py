@@ -119,6 +119,40 @@ def decode_frame(canid: int, data: list[int]) -> dict:
 
     return {}
 
+def apply_zero_streak_filter(df: pd.DataFrame, min_streak: int = 90):
+    vmax = pd.to_numeric(df["Voltage_Max"], errors="coerce")
+    vmin = pd.to_numeric(df["Voltage_Min"], errors="coerce")
+    vdelta = pd.to_numeric(df["Voltage_Delta"], errors="coerce")
+
+    # any signal zero → candidate
+    zero_mask = (vmax == 0) | (vmin == 0) | (vdelta == 0)
+
+    # individual zero masks
+    vmax_zero = (vmax == 0)
+    vmin_zero = (vmin == 0)
+    vdelta_zero = (vdelta == 0)
+
+    def streak(x):
+        return x * (x.groupby((~x).cumsum()).cumcount() + 1)
+
+    # compute streaks independently
+    vmax_streak = streak(vmax_zero)
+    vmin_streak = streak(vmin_zero)
+    vdelta_streak = streak(vdelta_zero)
+
+    # if ANY signal has >= min_streak → keep those zero samples
+    valid_zero = (
+        (vmax_streak >= min_streak) |
+        (vmin_streak >= min_streak) |
+        (vdelta_streak >= min_streak)
+    )
+
+    # keep:
+    # - all normal rows
+    # - only valid zero streak rows
+    final_mask = (~zero_mask) | valid_zero
+
+    return df[final_mask].reset_index(drop=True)
 
 # =====================================================
 # TRC -> DataFrame (merged by timestamp)
@@ -436,6 +470,7 @@ def main():
 
     # Parse + decode + merge
     df = trc_to_timeseries_df(trc_path, progress_cb=progress_cb)
+    df = apply_zero_streak_filter(df)
 
     # Compute summary
     summary_df, mode = compute_imbalance_summary(df)
