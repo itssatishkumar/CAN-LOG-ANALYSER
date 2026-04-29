@@ -50,6 +50,7 @@ HEADERS = [
     "Shutdown Routine",
     "Precharge Process Check",
     "Precharge Flag ON Duration\n(Max)",
+    "Contactor Weld\n(Max current in ready mode)",
     "Equivalent Cycle Count BMS",
     "BMS MCU Counter",
     "BMS Balancing",
@@ -571,7 +572,23 @@ def test_precharge_duration():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 29 : Cycle Count BMS
+# 🔥 TEST CASE 29 : Contactor Weld (Max current in ready mode)
+# =====================================================
+def test_contactor_weld():
+    path = os.path.join(os.getcwd(), "History", "contactor_weld.txt")
+
+    if not os.path.exists(path):
+        return None
+
+    with open(path) as f:
+        for line in f:
+            if "Current in READY mode" in line:
+                return line.split(":", 1)[1].strip()
+
+    return None
+
+# =====================================================
+# 🔥 TEST CASE 30 : Cycle Count BMS
 # =====================================================
 def test_cycle_count():
     path = os.path.join(os.getcwd(), "History", "cycle_count.txt")
@@ -587,19 +604,19 @@ def test_cycle_count():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 30 : BMS MCU Counter
+# 🔥 TEST CASE 31 : BMS MCU Counter
 # =====================================================
 def test_bms_mcu_counter():
     return "PASS"
 
 # =====================================================
-# 🔥 TEST CASE 31 : Balancing
+# 🔥 TEST CASE 32 : Balancing
 # =====================================================
 def test_balancing():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 32 : Voltage Spike Beyond Range
+# 🔥 TEST CASE 33 : Voltage Spike Beyond Range
 # =====================================================
 def test_voltage_spike():
     path = os.path.join(os.getcwd(), "History", "imbalance.txt")
@@ -615,7 +632,7 @@ def test_voltage_spike():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 33 : Aux Voltage Range
+# 🔥 TEST CASE 34 : Aux Voltage Range
 # =====================================================
 def test_aux_voltage_range():
     path = os.path.join(os.getcwd(), "History", "Aux_voltage.txt")
@@ -631,7 +648,7 @@ def test_aux_voltage_range():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 34 : Min AUX Voltage (<10)
+# 🔥 TEST CASE 35 : Min AUX Voltage (<10)
 # =====================================================
 def test_min_aux_voltage():
     path = os.path.join(os.getcwd(), "History", "Aux_voltage.txt")
@@ -650,7 +667,7 @@ def test_min_aux_voltage():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 35 : Avg Discharge Current
+# 🔥 TEST CASE 36 : Avg Discharge Current
 # =====================================================
 def test_avg_discharge_current():
     path = os.path.join(os.getcwd(), "History", "Current_Profile.txt")
@@ -666,7 +683,7 @@ def test_avg_discharge_current():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 36 : Peak Discharge Current and Duration
+# 🔥 TEST CASE 37 : Peak Discharge Current and Duration
 # =====================================================
 def test_peak_discharge_current():
     path = os.path.join(os.getcwd(), "History", "Current_Profile.txt")
@@ -708,7 +725,7 @@ def test_peak_discharge_current():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 37 : Max Regen Current and Duration
+# 🔥 TEST CASE 38 : Max Regen Current and Duration
 # =====================================================
 def test_peak_regen_current():
     path = os.path.join(os.getcwd(), "History", "Current_Profile.txt")
@@ -746,7 +763,7 @@ def test_peak_regen_current():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 38 : PCB Temperature Range
+# 🔥 TEST CASE 39 : PCB Temperature Range
 # =====================================================
 def test_pcb_temp_range():
     path = os.path.join(os.getcwd(), "History", "pcb_temp.txt")
@@ -763,7 +780,7 @@ def test_pcb_temp_range():
 
 
 # =====================================================
-# 🔥 TEST CASE 39 : PCB Temp Delta
+# 🔥 TEST CASE 40 : PCB Temp Delta
 # =====================================================
 def test_pcb_temp_delta():
     path = os.path.join(os.getcwd(), "History", "pcb_temp.txt")
@@ -782,7 +799,7 @@ def test_pcb_temp_delta():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 40 : Any BMS Error
+# 🔥 TEST CASE 41 : Any BMS Error
 # =====================================================
 def test_bms_error():
     path = os.path.join(os.getcwd(), "History", "BMS_Error.txt")
@@ -804,13 +821,13 @@ def test_bms_error():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 41 : Any Hardware Failure
+# 🔥 TEST CASE 42 : Any Hardware Failure
 # =====================================================
 def test_hardware_failure():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 42 : Vehicle State
+# 🔥 TEST CASE 43 : Vehicle State
 # =====================================================
 def test_vehicle_state():
     path = os.path.join(os.getcwd(), "History", "imbalance.txt")
@@ -829,7 +846,7 @@ def test_vehicle_state():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 43 : STARK F/W config
+# 🔥 TEST CASE 44 : STARK F/W config
 # =====================================================
 def test_stark_fw_config():
     path = os.path.join(os.getcwd(), "History", "Firmware+Config_details.txt")
@@ -852,7 +869,7 @@ def test_stark_fw_config():
     return None
 
 # =====================================================
-# 🔥 TEST CASE 44 : Xavier FW
+# 🔥 TEST CASE 45 : Xavier FW
 # =====================================================
 def test_xavier_fw():
     path = os.path.join(os.getcwd(), "History", "Firmware+Config_details.txt")
@@ -898,6 +915,7 @@ def build_row():
         test_shutdown_routine(),
         test_precharge_check(),
         test_precharge_duration(),
+        test_contactor_weld(),
         test_cycle_count(),
         test_bms_mcu_counter(),
         test_balancing(),
