@@ -1,4 +1,7 @@
 
+CANalyzer v1.0.37
+1. Excel tracker generate is indroduced.
+
 CANalyzer v1.0.36
 1. Fixed SoC ≤1% detection logic using 5 consecutive valid samples (streak).
 2. Ensured correct start timestamp of the streak is used for calculations.
