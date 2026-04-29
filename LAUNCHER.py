@@ -1674,7 +1674,7 @@ class CANLogDebugger(QWidget):
             QMessageBox.warning(self, "Error", "No file selected!")
             return
 
-        excel_path = os.path.join(self.script_dir, "tracker_summary.xlsx")
+        excel_path = os.path.join(self.script_dir, "TRACKER.xlsx")
         generator_script = os.path.join(self.script_dir, "Excel_Tracker.py")
 
         meta_payload = {
