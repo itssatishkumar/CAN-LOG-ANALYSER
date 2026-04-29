@@ -12,10 +12,24 @@ SERVICE_ACCOUNT_FILE = "Google_sheet.json"
 
 # ---------------- CONNECT ----------------
 def get_sheet():
-    creds = Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE,
+    import json
+
+    KEY = 123  # same key used during encryption
+
+    def decrypt(data):
+        return bytes([b ^ KEY for b in data])
+
+    with open("key.bin", "rb") as f:
+        encrypted = f.read()
+
+    decrypted = decrypt(encrypted)
+    json_data = json.loads(decrypted.decode("utf-8"))
+
+    creds = Credentials.from_service_account_info(
+        json_data,
         scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
+
     client = gspread.authorize(creds)
     return client.open_by_key(SPREADSHEET_ID).get_worksheet_by_id(WORKSHEET_ID)
 
