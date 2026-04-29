@@ -462,11 +462,23 @@ class CANLogDebugger(QWidget):
         extra_frame.setLayout(extra_grid)
 
         # ---------------------------------------------------
-        # GENERATE TRACKER BUTTON
+        # GENERATE TRACKER BUTTONS (SPLIT INTO 2)
         # ---------------------------------------------------
-        self.gen_btn = QPushButton("GENERATE TRACKER SUMMARY")
+        btn_layout = QHBoxLayout()
+
+        self.gen_btn = QPushButton("CREATE REPORT SUMMARY")
         self.gen_btn.setStyleSheet("background:black; color:white; padding:10px; font-weight:bold;")
         self.gen_btn.clicked.connect(self.generate_tracker)
+
+        self.gen_excel_btn = QPushButton("CREATE EXCEL TRACKER")
+        self.gen_excel_btn.setStyleSheet("background:black; color:white; padding:10px; font-weight:bold;")
+        self.gen_excel_btn.clicked.connect(self.generate_excel_tracker)
+
+        btn_layout.addWidget(self.gen_btn)
+        btn_layout.addWidget(self.gen_excel_btn)
+
+        btn_frame = QFrame()
+        btn_frame.setLayout(btn_layout)
 
         # ---------------------------------------------------
         # LEFT PANEL FINAL BUILD
@@ -485,7 +497,7 @@ class CANLogDebugger(QWidget):
         left.addWidget(self.run_all_btn)
         left.addWidget(md_frame)
         left.addWidget(extra_frame)
-        left.addWidget(self.gen_btn)
+        left.addWidget(btn_frame)
         left.addStretch()
 
         left_frame = QFrame()
@@ -1597,7 +1609,6 @@ class CANLogDebugger(QWidget):
         generator_script = os.path.join(self.script_dir, "Generate_Tracker.py")
 
         meta_payload = {
-            # Vehicle / file name shown at top of tracker
             "VEHICLE NAME": os.path.basename(self.selected_file_path),
             "BMS HW VERSION": self.tx_hw.text(),
             "BMS FIRMWARE": self.tx_fw.text(),
@@ -1622,6 +1633,7 @@ class CANLogDebugger(QWidget):
             env = os.environ.copy()
             env["META_JSON"] = json.dumps(meta_payload)
             env["SELECTED_FILE_NAME"] = os.path.basename(self.selected_file_path)
+
             proc = subprocess.run(
                 [sys.executable, generator_script, docx_path, self.tests_folder],
                 cwd=self.script_dir,
@@ -1638,7 +1650,6 @@ class CANLogDebugger(QWidget):
             QMessageBox.warning(self, "Tracker", err_msg)
             return
 
-        # Ask user if they want to open the generated report
         reply = QMessageBox.question(
             self,
             "Tracker",
@@ -1650,13 +1661,82 @@ class CANLogDebugger(QWidget):
         if reply == QMessageBox.Yes:
             try:
                 if sys.platform.startswith("win"):
-                    os.startfile(docx_path)  # type: ignore[attr-defined]
+                    os.startfile(docx_path)
                 elif sys.platform == "darwin":
                     subprocess.Popen(["open", docx_path])
                 else:
                     subprocess.Popen(["xdg-open", docx_path])
             except Exception as e:
                 QMessageBox.warning(self, "Tracker", f"Failed to open report:\n{e}")
+
+    def generate_excel_tracker(self):
+        if not self.selected_file_path:
+            QMessageBox.warning(self, "Error", "No file selected!")
+            return
+
+        excel_path = os.path.join(self.script_dir, "tracker_summary.xlsx")
+        generator_script = os.path.join(self.script_dir, "Excel_Tracker.py")
+
+        meta_payload = {
+            "VEHICLE NAME": os.path.basename(self.selected_file_path),
+            "BMS HW VERSION": self.tx_hw.text(),
+            "BMS FIRMWARE": self.tx_fw.text(),
+            "BMS CONFIG ID": self.tx_cfg.text(),
+            "BMS GITSHA": self.tx_git.text(),
+            "BMS MANIFEST": self.tx_manifest.text(),
+            "STARK FIRMWARE": self.tx_stark_fw.text(),
+            "STARK CONFIG": self.tx_stark_cfg.text(),
+            "XAVIER FIRMWARE": self.tx_xavier_fw.text(),
+            "DISTANCE COVERED": self.tx_distance.text(),
+            "VCU Reset Count": self.tx_vcu_value.text(),
+            "VCU Reset Result": self.tx_vcu_result.text(),
+            "BMS Reset Count": self.tx_bms_value.text(),
+            "BMS Reset Result": self.tx_bms_result.text(),
+        }
+
+        if not os.path.exists(generator_script):
+            QMessageBox.warning(self, "Excel Tracker", f"Excel_Tracker.py not found:\n{generator_script}")
+            return
+
+        try:
+            env = os.environ.copy()
+            env["META_JSON"] = json.dumps(meta_payload)
+            env["SELECTED_FILE_NAME"] = os.path.basename(self.selected_file_path)
+
+            proc = subprocess.run(
+                [sys.executable, generator_script, excel_path, self.tests_folder],
+                cwd=self.script_dir,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Excel Tracker", f"Failed to start script:\n{e}")
+            return
+
+        if proc.returncode != 0:
+            err_msg = proc.stderr.strip() or proc.stdout.strip() or "Excel tracker script returned an error."
+            QMessageBox.warning(self, "Excel Tracker", err_msg)
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Excel Tracker",
+            f"Excel tracker generated:\n{excel_path}\n\nDo you want to open this file?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+
+        if reply == QMessageBox.Yes:
+            try:
+                if sys.platform.startswith("win"):
+                    os.startfile(excel_path)
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", excel_path])
+                else:
+                    subprocess.Popen(["xdg-open", excel_path])
+            except Exception as e:
+                QMessageBox.warning(self, "Excel Tracker", f"Failed to open file:\n{e}")
 
 # -------------------------------------------------------
 # MAIN
