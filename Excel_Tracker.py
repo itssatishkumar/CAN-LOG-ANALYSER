@@ -1004,39 +1004,25 @@ def main():
     try:
         sheet = get_sheet()
         reset_sheet(sheet)
-        end = rowcol_to_a1(2, len(row[0]))
-        sheet.update(f"A2:{end}", row)
+
+        existing = sheet.get_all_values()
+
+        next_row = 2
+        for i, r in enumerate(existing[1:], start=2):
+            if not any(str(cell).strip() for cell in r):
+                next_row = i
+                break
+        else:
+            next_row = len(existing) + 1
+
+        end = rowcol_to_a1(next_row, len(row[0]))
+        sheet.update(f"A{next_row}:{end}", row)
+
     except Exception:
-        # Ignore ONLY if Google/JSON related fails
         pass
 
     save_to_excel(row)
     print("DONE")
-
-    import sys
-    import subprocess
-    from PySide6.QtWidgets import QApplication, QMessageBox
-
-    app = QApplication(sys.argv)
-
-    reply = QMessageBox.question(
-        None,
-        "Excel Tracker",
-        "TRACKER.xlsx created successfully.\n\nDo you want to open it?",
-        QMessageBox.Yes | QMessageBox.No,
-        QMessageBox.Yes,
-    )
-
-    if reply == QMessageBox.Yes:
-        try:
-            if sys.platform.startswith("win"):
-                os.startfile("TRACKER.xlsx")
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", "TRACKER.xlsx"])
-            else:
-                subprocess.Popen(["xdg-open", "TRACKER.xlsx"])
-        except Exception as e:
-            QMessageBox.warning(None, "Error", f"Failed to open file:\n{e}")
 
 
 if __name__ == "__main__":
