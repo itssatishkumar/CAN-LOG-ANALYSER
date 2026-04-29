@@ -564,17 +564,21 @@ def test_precharge_duration():
     path = os.path.join(os.getcwd(), "History", "Precharge.txt")
 
     if not os.path.exists(path):
-        return None
+        return "N/A"
 
     with open(path) as f:
         lines = f.readlines()
 
     if len(lines) >= 2:
-        line = lines[1]
+        line = lines[1].strip()
+
+        if not line:
+            return "N/A"
+
         if "Max Precharge Process Time" in line:
             return line.split(":", 1)[1].strip()
 
-    return None
+    return "N/A"
 
 # =====================================================
 # 🔥 TEST CASE 29 : Contactor Weld (Max current in ready mode)
@@ -583,15 +587,15 @@ def test_contactor_weld():
     path = os.path.join(os.getcwd(), "History", "contactor_weld.txt")
 
     if not os.path.exists(path):
-        return None
+        return "N/A"
 
     with open(path) as f:
         for line in f:
             if "Current in READY mode" in line:
-                return line.split(":", 1)[1].strip()
+                value = line.split(":", 1)[1].strip()
+                return value if value else "N/A"
 
-    return None
-
+    return "N/A"
 # =====================================================
 # 🔥 TEST CASE 30 : Cycle Count BMS
 # =====================================================
