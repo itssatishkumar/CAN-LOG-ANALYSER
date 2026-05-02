@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
 
@@ -14,7 +15,7 @@ def heartbeat():
 
         clients[device] = {
             "status": "alive",
-            "last_seen": datetime.now().strftime("%H:%M:%S")
+            "last_seen": datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S")
         }
 
         return jsonify({"message": "heartbeat received", "device": device})
@@ -34,7 +35,7 @@ def status():
 
     clients[host] = {
         "status": data.get("status", "running"),
-        "last_seen": datetime.now().strftime("%H:%M:%S")
+        "last_seen": datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S")
     }
 
     return jsonify({"ok": True})
