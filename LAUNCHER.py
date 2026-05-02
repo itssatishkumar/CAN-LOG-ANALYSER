@@ -1748,7 +1748,10 @@ def send_heartbeat():
     try:
         requests.post(
             "https://heartbeat-server-1z5n.onrender.com/heartbeat",
-            json={"device": socket.gethostname()},
+            json={
+                "device": socket.gethostname(),
+                "name": os.getlogin()
+            },
             timeout=2
         )
     except:
