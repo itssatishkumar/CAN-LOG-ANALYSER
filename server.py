@@ -6,34 +6,37 @@ app = Flask(__name__)
 
 clients = {}
 
-# ✅ heartbeat endpoint (what your app is calling)
+# ✅ heartbeat endpoint
 @app.route("/heartbeat", methods=["POST", "GET"])
 def heartbeat():
     if request.method == "POST":
         data = request.json or {}
         device = data.get("device", "unknown")
+        name = data.get("name", device)
 
         clients[device] = {
+            "name": name,
             "status": "alive",
             "last_seen": datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S")
         }
 
         return jsonify({"message": "heartbeat received", "device": device})
 
-    # GET → show something in browser
     return jsonify({
         "status": "server running",
         "connected_devices": clients
     })
 
 
-# existing status API
+# ✅ status endpoint
 @app.route("/status", methods=["POST"])
 def status():
     data = request.json or {}
     host = data.get("host", "unknown")
+    name = data.get("name", host)
 
     clients[host] = {
+        "name": name,
         "status": data.get("status", "running"),
         "last_seen": datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S")
     }
@@ -41,13 +44,13 @@ def status():
     return jsonify({"ok": True})
 
 
-# view all clients
+# ✅ view all clients
 @app.route("/clients", methods=["GET"])
 def get_clients():
     return jsonify(clients)
 
 
-# optional root check
+# ✅ root check
 @app.route("/", methods=["GET"])
 def home():
     return "Server is running"
