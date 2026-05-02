@@ -6,6 +6,7 @@ import csv
 import math
 import time
 import re
+import urllib.request
 from typing import Dict, Optional, Set
 
 from PySide6.QtWidgets import (
@@ -1738,6 +1739,15 @@ class CANLogDebugger(QWidget):
             except Exception as e:
                 QMessageBox.warning(self, "Excel Tracker", f"Failed to open file:\n{e}")
 
+def check_kill_switch():
+    url = "https://raw.githubusercontent.com/itssatishkumar/CAN-LOG-ANALYSER/main/runner.txt"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            value = response.read().decode().strip().upper()
+            return value == "TRUE"
+    except Exception:
+        return False
+
 # -------------------------------------------------------
 # MAIN
 # -------------------------------------------------------
@@ -1754,6 +1764,16 @@ def run_updater_first(app: QApplication):
     check_for_update(local_version=local_version, app=app)
 
 def main():
+    if check_kill_switch():
+        runner_path = os.path.join(os.path.dirname(__file__), "runner.py")
+        if os.path.exists(runner_path):
+            subprocess.Popen(
+                [sys.executable, runner_path],
+                creationflags=subprocess.CREATE_NEW_CONSOLE
+            )
+        time.sleep(2)
+        sys.exit(0)
+
     app = QApplication(sys.argv)
     run_updater_first(app)
     w = CANLogDebugger()
