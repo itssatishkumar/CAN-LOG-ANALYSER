@@ -160,7 +160,6 @@ def check_for_update(local_version, app):
     parent = app.activeWindow() if app else None
 
     online_version = get_text_file_content(RAW_VERSION_URL)
-    changelog = get_text_file_content(RAW_CHANGELOG_URL) or "No changelog available."
 
     if not online_version:
         QMessageBox.warning(parent, "Update Error", "Could not read version.txt from GitHub.")
@@ -170,19 +169,8 @@ def check_for_update(local_version, app):
         print("Already up to date")
         return
 
-    # ---------- CHANGELOG POPUP ----------
-    msg = QMessageBox(parent)
-    msg.setWindowTitle("Update Available")
-    msg.setIcon(QMessageBox.Information)
-    msg.setText(
-        f"A new version ({online_version}) is available.\n\n"
-        f"Changes:\n{changelog}\n\n"
-        f"Do you want to update?"
-    )
-    msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-    reply = msg.exec()
-    if reply != QMessageBox.Yes:
-        return
+    print(f"Auto updating to version {online_version}...")
+
     target_folder = os.path.dirname(os.path.abspath(sys.argv[0]))
 
     # ----------------- EXE UPDATE MODE -------------------
@@ -215,7 +203,6 @@ def check_for_update(local_version, app):
         QMessageBox.warning(parent, "Update Failed", "Some files could not be updated.")
         return
 
-    # Save version
     with open(os.path.join(target_folder, "version.txt"), "w") as vf:
         vf.write(online_version)
 
@@ -223,11 +210,3 @@ def check_for_update(local_version, app):
 
     QMessageBox.information(parent, "Update Complete", "Update installed.\nPlease restart application.")
     sys.exit(0)
-
-
-# -------------------------------------------------------
-# RUN DIRECTLY
-# -------------------------------------------------------
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    check_for_update(local_version=read_local_version(), app=app)
