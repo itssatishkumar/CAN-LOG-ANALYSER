@@ -7,6 +7,8 @@ import math
 import time
 import re
 import urllib.request
+import requests
+import socket
 from typing import Dict, Optional, Set
 
 from PySide6.QtWidgets import (
@@ -607,6 +609,9 @@ class CANLogDebugger(QWidget):
         final.addLayout(main)
 
         self.setLayout(final)
+        self.heartbeat_timer = QTimer(self)
+        self.heartbeat_timer.timeout.connect(send_heartbeat)
+        self.heartbeat_timer.start(5000)
 
     # ======================================================
     # UTILS: CELL STYLING & SCRIPT PATHS
@@ -1738,6 +1743,16 @@ class CANLogDebugger(QWidget):
                     subprocess.Popen(["xdg-open", excel_path])
             except Exception as e:
                 QMessageBox.warning(self, "Excel Tracker", f"Failed to open file:\n{e}")
+
+def send_heartbeat():
+    try:
+        requests.post(
+            "https://heartbeat-server-1z5n.onrender.com/heartbeat",
+            json={"device": socket.gethostname()},
+            timeout=2
+        )
+    except:
+        pass
 
 def check_kill_switch():
     url = "https://raw.githubusercontent.com/itssatishkumar/CAN-LOG-ANALYSER/main/runner.txt"
