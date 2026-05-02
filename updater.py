@@ -160,6 +160,7 @@ def check_for_update(local_version, app):
     parent = app.activeWindow() if app else None
 
     online_version = get_text_file_content(RAW_VERSION_URL)
+    changelog = get_text_file_content(RAW_CHANGELOG_URL) or "No changelog available."
 
     if not online_version:
         QMessageBox.warning(parent, "Update Error", "Could not read version.txt from GitHub.")
@@ -169,8 +170,7 @@ def check_for_update(local_version, app):
         print("Already up to date")
         return
 
-    print(f"Auto updating to version {online_version}...")
-
+    print(f"Updating to version {online_version}...")
     target_folder = os.path.dirname(os.path.abspath(sys.argv[0]))
 
     # ----------------- EXE UPDATE MODE -------------------
@@ -203,6 +203,7 @@ def check_for_update(local_version, app):
         QMessageBox.warning(parent, "Update Failed", "Some files could not be updated.")
         return
 
+    # Save version
     with open(os.path.join(target_folder, "version.txt"), "w") as vf:
         vf.write(online_version)
 
