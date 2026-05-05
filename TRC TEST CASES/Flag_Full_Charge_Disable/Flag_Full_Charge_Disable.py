@@ -188,6 +188,28 @@ def process_trc(trc_path, progress_cb=None):
             "Reason": "Insufficient Vmax samples: did not capture NEXT 5 Vmax after drop-frame"
         }
 
+    # ------------------------------------------------------------
+    # EXPECTED DROP BUT DID NOT HAPPEN => FAIL
+    # ------------------------------------------------------------
+    if valid_event is None and invalid_event is None:
+        prev_soc = None
+
+        for h in history:
+            if h["ffc"] == 1 and prev_soc is not None:
+                crossed = prev_soc > 99.51 and h["soc"] <= 99.51
+                vmax_cond = (h["vmax"] is not None and h["vmax"] < 3300)
+
+                if crossed or vmax_cond:
+                    invalid_event = {
+                        "Timestamp": h["timestamp"],
+                        "SoC_At_InvalidState": h["soc"],
+                        "Vmax_At_InvalidState_mV": h["vmax"],
+                        "Reason": "FFC did NOT drop at first threshold crossing (SoC/Vmax)"
+                    }
+                    break
+
+            prev_soc = h["soc"]
+
     return history, valid_event, invalid_event
 
 
