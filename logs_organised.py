@@ -16,6 +16,11 @@ RE_FRAME = re.compile(
     r"^\s*(\d+)\)?\s+([\d.]+)\s+([A-Za-z]+)\s+([0-9A-Fa-f]+)\s+(\d+)\s*(.*)$"
 )
 
+RE_FRAME_CANSHARK = re.compile(
+    r"^\s*(\d+)\s+([\d.]+)\s+([A-Za-z]+)\s+([0-9A-Fa-f]+)\s+(Rx|Tx)\s+(\d+)\s+(.*)$",
+    re.IGNORECASE
+)
+
 MONTHS = {
     1: "JAN", 2: "FEB", 3: "MAR", 4: "APR", 5: "MAY", 6: "JUN",
     7: "JUL", 8: "AUG", 9: "SEP", 10: "OCT", 11: "NOV", 12: "DEC"
@@ -253,6 +258,15 @@ def parse_trc_file(filepath: str):
             canid = m.group(4).upper()
             dlc = m.group(5)
             data = m.group(6)
+        else:
+            m2 = RE_FRAME_CANSHARK.match(ln)
+            if not m2:
+                continue
+            offset = float(m2.group(2))
+            ftype = m2.group(5)   # use Rx/Tx instead of DT
+            canid = m2.group(4).upper()
+            dlc = m2.group(6)
+            data = m2.group(7)
 
             # 🔥 Apply 409 → 402 conversion here
             canid, data = convert_409_to_402(canid, data)
