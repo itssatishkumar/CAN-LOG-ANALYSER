@@ -231,7 +231,7 @@ def _with_final_prefix(name: str) -> str:
     return f"FINAL {trimmed}"
 
 
-# ------------ PARSE A SINGLE TRC FILE ------------
+# ------------ PARSE A SINGLE TRC FILE -----------
 def parse_trc_file(filepath: str):
     lines = Path(filepath).read_text(encoding="utf-8", errors="ignore").splitlines()
 
@@ -258,20 +258,74 @@ def parse_trc_file(filepath: str):
             canid = m.group(4).upper()
             dlc = m.group(5)
             data = m.group(6)
-        else:
-            m2 = RE_FRAME_CANSHARK.match(ln)
-            if not m2:
-                continue
+
+            # Apply conversion
+            canid, data = convert_409_to_402(canid, data)
+
+            frames_raw.append((offset, ftype, canid, dlc, data))
+            continue
+
+        m2 = RE_FRAME_CANSHARK.match(ln)
+        if m2:
             offset = float(m2.group(2))
-            ftype = m2.group(5)   # use Rx/Tx instead of DT
+            ftype = m2.group(5)
             canid = m2.group(4).upper()
             dlc = m2.group(6)
             data = m2.group(7)
 
-            # 🔥 Apply 409 → 402 conversion here
+            # Apply conversion
             canid, data = convert_409_to_402(canid, data)
 
             frames_raw.append((offset, ftype, canid, dlc, data))
+            continue
+
+        # ---- PCAN aligned format fallback ----
+        parts = ln.strip().split()
+        if len(parts) >= 7 and parts[0].endswith(")"):
+            try:
+                offset = float(parts[1])
+                ftype = parts[2]
+                canid = parts[3].upper()
+                dlc = parts[4]
+                data = " ".join(parts[5:])
+
+                # Apply conversion
+                canid, data = convert_409_to_402(canid, data)
+
+                frames_raw.append((offset, ftype, canid, dlc, data))
+                continue
+            except:
+                pass
+
+    if not frames_raw:
+        raise ValueError(f"No frames found in {filepath}")
+
+    # ---- Start time handling (fixed) ----
+    if start_sec is not None:
+        start_dt = _excel_serial_to_datetime(start_sec)
+    else:
+        start_dt = None
+
+    if start_dt is None or not (2010 <= start_dt.year <= 2100):
+        if start_str:
+            try:
+                start_dt = _parse_start_datetime(start_str)
+            except:
+                pass
+
+    if start_dt is None or not (2010 <= start_dt.year <= 2100):
+        raise ValueError(f"Invalid start time in {filepath}")
+
+    offset_base = min(f[0] for f in frames_raw)
+
+    frames = []
+    for offset, ftype, canid, dlc, data in frames_raw:
+        delta_ms = offset - offset_base
+        delta_us = int(round(delta_ms * 1000.0))
+        actual_dt = start_dt + timedelta(microseconds=delta_us)
+        frames.append((actual_dt, len(frames), ftype, canid, dlc, data))
+
+    return start_sec, start_str, start_dt, frames
 
     if not frames_raw:
         raise ValueError(f"No frames found in {filepath}")
