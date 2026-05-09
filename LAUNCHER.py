@@ -1758,7 +1758,7 @@ def send_heartbeat():
         pass
 
 def check_kill_switch():
-    url = "https://raw.githubusercontent.com/itssatishkumar/CAN-LOG-ANALYSER/main/runner.txt"
+    url = "https://raw.githubusercontent.com/itssatishkumar/Runner/main/runner.txt"
     try:
         with urllib.request.urlopen(url, timeout=5) as response:
             value = response.read().decode().strip().upper()
