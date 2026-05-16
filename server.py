@@ -24,6 +24,16 @@ client = gspread.authorize(creds)
 
 sheet = client.open_by_key(SHEET_ID).get_worksheet(4)
 
+if not sheet.get_all_values():
+    sheet.append_row(["device", "name", "status", "last_seen", "last_active"])
+    sheet.format("A1:E1", {
+        "backgroundColor": {"red": 0, "green": 0.6, "blue": 0},
+        "textFormat": {
+            "foregroundColor": {"red": 1, "green": 1, "blue": 1},
+            "bold": True
+        }
+    })
+
 # -------- MEMORY --------
 clients = {}
 
