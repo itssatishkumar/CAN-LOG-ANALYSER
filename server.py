@@ -13,7 +13,6 @@ TIMEOUT = 60
 THIRTY_DAYS = 30 * 24 * 60 * 60
 
 SHEET_ID = "1nDkL93epR1RQfFvCrzAVeiu5a9TpaU2484sOaVkQAQw"
-SHEET_NAME = "Sheet1"   # change if needed
 
 # -------- GOOGLE SHEETS AUTH --------
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -24,136 +23,76 @@ client = gspread.authorize(creds)
 
 sheet = client.open_by_key(SHEET_ID).get_worksheet(4)
 
-if not sheet.get_all_values():
-    sheet.append_row(["device", "name", "status", "last_seen", "last_active"])
-    sheet.format("A1:E1", {
-        "backgroundColor": {"red": 0, "green": 0.6, "blue": 0},
-        "textFormat": {
-            "foregroundColor": {"red": 1, "green": 1, "blue": 1},
-            "bold": True
-        }
-    })
-
 # -------- MEMORY --------
 clients = {}
 
 def now_ist():
     return datetime.now(ZoneInfo("Asia/Kolkata"))
 
-# -------- SHEET FUNCTIONS --------
+# -------- LOAD --------
 def load_from_sheet():
     global clients
     try:
         rows = sheet.get_all_records()
         for row in rows:
-            device = row["device"]
+            device = row["DEVISE NAME"]
             clients[device] = {
-                "name": row["name"],
-                "status": row["status"],
-                "last_seen": row["last_seen"],
-                "last_active": row["last_active"]
+                "name": row["USER INFO"],
+                "login_time": row["LOGIN"],
+                "last_seen": row["LOGOUT"]
             }
     except:
-        pass
+        clients = {}
 
+# -------- SAVE (overwrite row if exists) --------
 def save_to_sheet():
-    sheet.clear()
-    sheet.append_row(["device", "name", "status", "last_seen", "last_active"])
+    rows = sheet.get_all_records()
+    row_map = {row["DEVISE NAME"]: idx + 2 for idx, row in enumerate(rows)}
 
     for device, info in clients.items():
-        sheet.append_row([
+        row_data = [
             device,
             info.get("name", ""),
-            info.get("status", ""),
-            info.get("last_seen", ""),
-            info.get("last_active", "")
-        ])
+            info.get("login_time", ""),
+            info.get("last_seen", "")
+        ]
 
-# -------- LOGIC --------
-def mark_inactive(timeout_seconds=TIMEOUT):
-    now = now_ist()
-    for device, info in clients.items():
-        last_seen_time = datetime.strptime(info["last_seen"], "%H:%M:%S").replace(
-            year=now.year, month=now.month, day=now.day, tzinfo=now.tzinfo
-        )
-        if (now - last_seen_time).total_seconds() > timeout_seconds:
-            info["status"] = "offline"
-
-def cleanup_old():
-    now = now_ist()
-    to_delete = []
-    for device, info in clients.items():
-        last_seen_time = datetime.strptime(info["last_seen"], "%H:%M:%S").replace(
-            year=now.year, month=now.month, day=now.day, tzinfo=now.tzinfo
-        )
-        if (now - last_seen_time).total_seconds() > THIRTY_DAYS:
-            to_delete.append(device)
-
-    for d in to_delete:
-        del clients[d]
+        if device in row_map:
+            sheet.update(f"A{row_map[device]}:D{row_map[device]}", [row_data])
+        else:
+            sheet.append_row(row_data)
 
 # -------- LOAD EXISTING --------
 load_from_sheet()
 
 # -------- ROUTES --------
-@app.route("/heartbeat", methods=["POST", "GET"])
+@app.route("/heartbeat", methods=["POST"])
 def heartbeat():
-    if request.method == "POST":
-        data = request.json or {}
-        device = data.get("device", "unknown")
-        name = data.get("name", device)
-
-        now = now_ist()
-
-        if device not in clients:
-            clients[device] = {"name": name}
-
-        clients[device]["status"] = "alive"
-        clients[device]["last_seen"] = now.strftime("%H:%M:%S")
-        clients[device]["last_active"] = now.strftime("%H:%M:%S")
-
-        save_to_sheet()
-
-        return jsonify({"message": "heartbeat received", "device": device})
-
-    mark_inactive()
-    cleanup_old()
-    save_to_sheet()
-
-    return jsonify({
-        "status": "server running",
-        "connected_devices": clients
-    })
-
-@app.route("/status", methods=["POST"])
-def status():
     data = request.json or {}
-    host = data.get("host", "unknown")
-    name = data.get("name", host)
+    device = data.get("device", "unknown")
+    name = data.get("name", device)
 
-    now = now_ist()
+    now = now_ist().isoformat()
 
-    if host not in clients:
-        clients[host] = {"name": name}
-
-    clients[host]["status"] = data.get("status", "running")
-    clients[host]["last_seen"] = now.strftime("%H:%M:%S")
-    clients[host]["last_active"] = now.strftime("%H:%M:%S")
+    if device not in clients:
+        clients[device] = {
+            "name": name,
+            "login_time": now,
+            "last_seen": now
+        }
+    else:
+        clients[device]["last_seen"] = now
 
     save_to_sheet()
-
     return jsonify({"ok": True})
 
 @app.route("/clients", methods=["GET"])
 def get_clients():
-    mark_inactive()
-    cleanup_old()
-    save_to_sheet()
     return jsonify(clients)
 
-@app.route("/", methods=["GET"])
+@app.route("/")
 def home():
-    return "Server is running"
+    return "Server running"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
