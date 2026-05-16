@@ -1750,7 +1750,8 @@ def send_heartbeat():
             "https://heartbeat-server-1z5n.onrender.com/heartbeat",
             json={
                 "device": socket.gethostname(),
-                "name": os.getlogin()
+                "name": os.getlogin(),
+                "status": "running"
             },
             timeout=2
         )
