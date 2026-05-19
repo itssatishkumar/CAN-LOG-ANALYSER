@@ -67,7 +67,23 @@ def parse_trc(filepath, progress_cb=None):
 
 
 def _ts_to_float(ts: str) -> float:
-    """Extract a floating-point seconds value from the TRC timestamp string."""
+    """Full HH:MM:SS conversion — used for debounce, deadlines, cycle comparisons."""
+    ts_match = re.search(r"(\d+):(\d+):(\d+\.\d+)", ts)
+    if ts_match:
+        hours = int(ts_match.group(1))
+        minutes = int(ts_match.group(2))
+        seconds = float(ts_match.group(3))
+        return hours * 3600 + minutes * 60 + seconds
+    ts_match = re.search(r"(\d+):(\d+\.\d+)", ts)
+    if ts_match:
+        minutes = int(ts_match.group(1))
+        seconds = float(ts_match.group(2))
+        return minutes * 60 + seconds
+    ts_match = re.search(r"(\d+\.\d+)", ts)
+    return float(ts_match.group(1)) if ts_match else 0.0
+
+def _ts_to_seconds(ts: str) -> float:
+    """Simple raw float extraction — used only for veh_timing dt calculation."""
     ts_match = re.search(r"(\d+\.\d+)", ts)
     return float(ts_match.group(1)) if ts_match else 0.0
 
@@ -121,83 +137,113 @@ def get_vehicle_2_to_0_transitions(frames):
     return times
 
 
-# -------------------------------------------------------
-# SHUTDOWN ANALYSIS CORE
-# -------------------------------------------------------
 def analyze(frames):
-    # All observed 1/2->0 transitions in log (anywhere)
     veh_2to0 = get_vehicle_2_to_0_transitions(frames)
 
     cycles = []
     active = False
+    shutdown_seen = False
 
     start_soc = None
     reflect_soc = None
     ack_time = None
     mcu_at_shut = None
+    mcu_prev = None
+    mcu_reset_seen = False
+    soc_before_reset = None
+    soc_after_reset = None  
     bms_zero_seen = False
     bms_exit_zero = False
     ts_shut = None
     ts_shut_raw = None
+    ack_deadline = None
+    mcu_ready_for_next = False
 
     for fr in frames:
 
-        # Detect start of a shutdown cycle: 1840F400
         if fr.can_id == ID_SHUT:
-            if not active:
-                active = True
-                start_soc = None
-                reflect_soc = None
-                ack_time = None
-                mcu_at_shut = None
-                bms_zero_seen = False
-                bms_exit_zero = False
-                ts_shut = _ts_to_float(fr.ts)
-                ts_shut_raw = fr.ts
+            shutdown_seen = True
+            current_shut_ts = _ts_to_float(fr.ts)
+
+            if ts_shut is not None and (current_shut_ts - ts_shut) < 5.0:
+                continue
+
+            # Valid new shutdown — reset all state
+            start_soc = None
+            reflect_soc = None
+            ack_time = None
+            mcu_at_shut = None
+            mcu_prev = None
+            mcu_reset_seen = False
+            mcu_ready_for_next = False
+            soc_before_reset = None
+            soc_after_reset = None
+            bms_zero_seen = False
+            bms_exit_zero = False
+            active = True
+            ts_shut = current_shut_ts
+            ack_deadline = ts_shut + 3.0
+            ts_shut_raw = fr.ts
             continue
 
         if not active:
             continue
 
-        # Decode SoC & BMS State (0x109)
         if fr.can_id == ID_SOC_STATE:
             soc = decode_soc(fr)
             bms_st = decode_bms_state(fr)
 
-            # Start SoC = first non-zero state SoC after shutdown command
-            if start_soc is None and bms_st != 0:
+            if start_soc is None and bms_st != 0 and soc != 0:
                 start_soc = soc
+                print(f"START_SOC SET: ts={fr.ts} soc={soc} bms_st={bms_st} ts_shut={ts_shut}")
 
-            # Detect BMS going to 0
             if bms_st == 0 and not bms_zero_seen:
                 bms_zero_seen = True
 
-            # First VALID restored SoC after BMS comes back (ignore delayed zero SoC)
             if bms_zero_seen and bms_st != 0 and soc != 0 and not bms_exit_zero:
                 reflect_soc = soc
                 bms_exit_zero = True
 
-        # First MCU after shutdown command
-        if fr.can_id == ID_MCU and mcu_at_shut is None:
-            mcu_at_shut = decode_mcu(fr)
+            if not mcu_reset_seen and soc_before_reset is None and bms_st != 0 and soc != 0:
+                soc_before_reset = soc
+            else:
+                if soc_after_reset is None and mcu_reset_seen and mcu_prev is not None and mcu_prev >= 3:
+                    soc_after_reset = soc
 
-        # First ACK after shutdown
+        if fr.can_id == ID_MCU:
+            mcu_val = decode_mcu(fr)
+
+            if mcu_at_shut is None:
+                mcu_at_shut = mcu_val
+
+            if mcu_prev is not None and mcu_val < mcu_prev and mcu_val < mcu_at_shut:
+                mcu_reset_seen = True
+
+            if mcu_reset_seen and mcu_val > 10:
+                mcu_ready_for_next = True
+
+            mcu_prev = mcu_val
+
         if fr.can_id == ID_ACK and has_ack(fr):
-            if ack_time is None:
-                ack_time = _ts_to_float(fr.ts)
+            ts_val = _ts_to_float(fr.ts)
+            if ack_time is None and ts_shut <= ts_val <= ack_deadline:
+                ack_time = ts_val
 
-        # End cycle once BMS has gone 0 -> non-zero
-        if bms_exit_zero:
+        current_ts = _ts_to_float(fr.ts)
+        if start_soc is not None and (bms_exit_zero or (not bms_zero_seen and mcu_reset_seen)) and current_ts >= ack_deadline:
+            print(f"CLOSE ts={fr.ts} bms_exit={bms_exit_zero} mcu_reset={mcu_reset_seen} start={start_soc} reflect={reflect_soc} shut={ts_shut}")
 
-            # ----- SoC result -----
+            if not bms_zero_seen and mcu_reset_seen:
+                if reflect_soc is None and soc_after_reset is not None:
+                    reflect_soc = soc_after_reset
+
             if start_soc is not None and reflect_soc is not None:
-                delta = round(start_soc - reflect_soc, 3)
+                delta = round(abs(start_soc - reflect_soc), 3)
                 soc_result = "PASS" if abs(delta) <= 0.1 else "FAIL"
             else:
                 delta = None
                 soc_result = "SHUT_MISS"
 
-            # ----- ACK result -----
             if mcu_at_shut is None:
                 ack_state = "NO_MCU"
             else:
@@ -208,32 +254,40 @@ def analyze(frames):
                 else:
                     ack_state = "ACK_OK" if ack_time is not None else "ACK_MISSING"
 
-            # ----- ACK time label -----
             if ack_time is None:
                 ack_time_lbl = "MISS"
             else:
                 ack_time_lbl = f"{round(ack_time - ts_shut, 3)}s"
 
-            # ----- Vehicle timing -----
-            # Only judge VCU if we actually have at least one 1/2->0 transition in the log.
-            if veh_2to0:
-                best_dt = None
-                for t in veh_2to0:
-                    dt = t - ts_shut
+            # ===== FIXED VEHICLE TIMING =====
+            best_dt = None
+            prev_state = None
+            ts_shut_s = _ts_to_seconds(ts_shut_raw)
+
+            for fr2 in frames:
+                t = _ts_to_seconds(fr2.ts)
+
+                if t < ts_shut_s:
+                    continue
+
+                if fr2.can_id != ID_VEHICLE:
+                    continue
+
+                state = decode_vehicle_state(fr2)
+
+                if prev_state in (0x02, 0x01) and state == 0x00:
+                    dt = t - ts_shut_s
                     if abs(dt) <= 2.0:
-                        if best_dt is None or abs(dt) < abs(best_dt):
-                            best_dt = dt
+                        best_dt = dt
+                        break
 
-                if best_dt is None:
-                    # We have 1/2->0 transitions in log, but NONE were within 2s of this shutdown → real misalignment
-                    veh_timing = "VCU_FAULT(>2s)"
-                else:
-                    veh_timing = f"OK({round(abs(best_dt),3)}s)"
+                prev_state = state
+
+            if best_dt is None:
+                veh_timing = "VCU_FAULT(>2s)"
             else:
-                # No 1/2->0 transition anywhere in log → do NOT blame VCU/BMS, just mark as incomplete.
-                veh_timing = "INCOMPLETE(no 1/2->0 transition)"
+                veh_timing = f"OK({round(abs(best_dt),3)}s)"
 
-            # ----- Final decision -----
             final = "PASS"
             if soc_result != "PASS":
                 final = "FAIL"
@@ -241,39 +295,25 @@ def analyze(frames):
                 final = "FAIL"
             if veh_timing.startswith("VCU_FAULT"):
                 final = "FAIL"
-            # Note: "INCOMPLETE(...)" does NOT force FAIL. We are not blaming anyone.
 
-            # ----- Remarks -----
             remark = "—"
 
             if final == "FAIL":
-
                 if veh_timing.startswith("VCU_FAULT"):
                     remark = "VCU Fault - Vehicle 1/2->0 and shutdown not aligned within 2s."
-
-                elif veh_timing.startswith("INCOMPLETE"):
-                    # This branch technically won't hit with final=FAIL,
-                    # but kept for clarity if logic later changes.
-                    remark = "Data incomplete - 1/2->0 transition not fully captured in log."
-
                 elif ack_state == "ACK_MISSING":
                     remark = f"BMS Fault - Expected ACK missing when MCU >= 90 (MCU={mcu_at_shut})."
-
                 elif ack_state == "ACK_UNEXPECTED":
                     remark = f"BMS Fault - Unexpected ACK when MCU < 90 (MCU={mcu_at_shut})."
-
                 elif ack_state == "NO_MCU":
                     remark = "Integration Fault - MCU counter frame missing."
-
                 elif soc_result == "SHUT_MISS":
                     remark = "VCU/BMS Integration Fault - No BMS reboot detected."
-
                 elif soc_result != "PASS":
                     remark = "BMS Fault - Incorrect SoC restoration."
             elif ack_state == "ACK_OPTIONAL":
                 remark = "ACK optional zone (MCU between 90–200)"
 
-            # Save this shutdown cycle
             cycles.append({
                 "Start_SoC": start_soc,
                 "Reflect_SoC": reflect_soc,
@@ -291,6 +331,45 @@ def analyze(frames):
             })
 
             active = False
+
+    if shutdown_seen and not cycles:
+
+        if mcu_reset_seen and soc_before_reset is not None and soc_after_reset is not None:
+            if start_soc is None:
+                start_soc = soc_before_reset
+            cycles.append({
+                "Start_SoC": start_soc,
+                "Reflect_SoC": soc_after_reset,
+                "Delta": round(abs(soc_before_reset - soc_after_reset), 3),
+                "SoC_Result": "ESTIMATED",
+                "MCU": mcu_at_shut,
+                "ACK_Time": "MISS" if ack_time is None else f"{round(ack_time - ts_shut, 3)}s",
+                "ACK_State": "ACK_OK" if ack_time is not None else "ACK_MISSING",
+                "VehTime": "INCOMPLETE(no 1/2->0 transition)" if not veh_2to0 else "NOT_ALIGNED",
+                "Shutdown": "DETECTED",
+                "Final": "INCOMPLETE",
+                "Remark": "BMS=0 not seen, SoC estimated using MCU reset (MCU>=3).",
+                "Shutdown_ts": ts_shut,
+                "Shutdown_ts_raw": ts_shut_raw
+            })
+        else:
+            if start_soc is None:
+                start_soc = soc_before_reset
+            cycles.append({
+                "Start_SoC": start_soc,
+                "Reflect_SoC": soc_after_reset,
+                "Delta": None,
+                "SoC_Result": "INCOMPLETE",
+                "MCU": mcu_at_shut,
+                "ACK_Time": "MISS" if ack_time is None else f"{round(ack_time - ts_shut, 3)}s",
+                "ACK_State": "ACK_OK" if ack_time is not None else "ACK_MISSING",
+                "VehTime": "INCOMPLETE(no 1/2->0 transition)" if not veh_2to0 else "NOT_ALIGNED",
+                "Shutdown": "DETECTED",
+                "Final": "INCOMPLETE",
+                "Remark": "Neither BMS=0 seen nor valid MCU reset (>=3) detected.",
+                "Shutdown_ts": ts_shut,
+                "Shutdown_ts_raw": ts_shut_raw
+            })
 
     return cycles
 
@@ -549,10 +628,19 @@ def save_plot_png(cycles):
 # -------------------------------------------------------
 def main():
     if len(sys.argv) < 2:
-        print("ERROR: No TRC file received from GUI!")
-        sys.exit(1)
-
-    filepath = sys.argv[1]
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        filepath = filedialog.askopenfilename(
+            title="Select TRC File",
+            filetypes=[("TRC files", "*.trc"), ("All files", "*.*")]
+        )
+        if not filepath:
+            print("ERROR: No TRC file selected!")
+            sys.exit(1)
+    else:
+        filepath = sys.argv[1]
     if not Path(filepath).exists():
         print(f"ERROR: TRC file not found: {filepath}")
         sys.exit(1)
