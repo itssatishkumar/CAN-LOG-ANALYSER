@@ -188,6 +188,23 @@ def save_summary_json(summary):
     with open(SUMMARY_FILE, "w") as f:
         json.dump(summary, f, indent=2)
 
+def save_txt(cycle_count):
+
+    p = Path(__file__).resolve()
+
+    for parent in [p] + list(p.parents):
+
+        history = parent / "History"
+
+        if history.exists() and history.is_dir():
+
+            file = history / "cycle_count.txt"
+
+            with open(file, "w", encoding="utf-8") as f:
+                f.write(f"Cycle Count: {cycle_count}")
+
+            return        
+
 
 def make_plot(valid_series):
 
@@ -260,6 +277,7 @@ def main():
 
     save_results_json(summary["Result"])
     save_summary_json(summary)
+    save_txt(summary["final_cycle"])
 
     make_plot(valid_series)
 
