@@ -382,16 +382,30 @@ def main():
         history = parent / "History"
         if history.exists() and history.is_dir():
 
-            aux_series = plot_df["AuxVoltage_V"].dropna()
-            aux_max = aux_series.max() if not aux_series.empty else 0
+            # TRUE MAX from full TRC
+            aux_max = 0
 
-            # Use true minimum
+            with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    p_line = parse_trc_line(line)
+                    if not p_line:
+                        continue
+
+                    _, canid, dlc, data = p_line
+
+                    if canid == AUXV_CAN_ID and dlc >= AUXV_MSB_IDX + 2:
+                        v = decode_0606_auxv(data)
+
+                        if v > aux_max:
+                            aux_max = v
+
+            # TRUE MIN
             if min_all is not None and min_all > 0:
                 aux_min = min_all
             else:
                 aux_min = 0
 
-            # Correct count from FULL data
+            # Count occurrences of minimum
             count = 0
             if min_all is not None and min_all > 0:
                 with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -399,9 +413,12 @@ def main():
                         p_line = parse_trc_line(line)
                         if not p_line:
                             continue
+
                         _, canid, dlc, data = p_line
+
                         if canid == AUXV_CAN_ID and dlc >= AUXV_MSB_IDX + 2:
                             v = decode_0606_auxv(data)
+
                             if v > 0 and round(v, 2) == round(min_all, 2):
                                 count += 1
 
@@ -411,22 +428,39 @@ def main():
                     f"Lowest Aux Voltage : {min_all:.2f}V ({count} count)"
                 )
             else:
-                text = "Aux Voltage Range : N/A\nLowest Aux Voltage : N/A"
+                text = (
+                    "Aux Voltage Range : N/A\n"
+                    "Lowest Aux Voltage : N/A"
+                )
 
             file = history / "Aux_voltage.txt"
             with open(file, "w", encoding="utf-8") as f:
                 f.write(text)
+
             break
 
     if min_between is None:
-        line1 = f"Min AuxVoltage between 0109(3->3) is N/A, Timestamp: N/A (PASS CONDITION {THRESH_BETWEEN_3_TO_3}V)"
+        line1 = (
+            f"Min AuxVoltage between 0109(3->3) is N/A, Timestamp: N/A "
+            f"(PASS CONDITION {THRESH_BETWEEN_3_TO_3}V)"
+        )
     else:
-        line1 = f"Min AuxVoltage between 0109(3->3) is {min_between:.2f}V, Timestamp: {ts_between} (PASS CONDITION {THRESH_BETWEEN_3_TO_3}V)"
+        line1 = (
+            f"Min AuxVoltage between 0109(3->3) is {min_between:.2f}V, "
+            f"Timestamp: {ts_between} "
+            f"(PASS CONDITION {THRESH_BETWEEN_3_TO_3}V)"
+        )
 
     if min_all is None:
-        line2 = f"Lowest Aux voltage of all record: N/A V, Timestamp: N/A (PASS condition {THRESH_OVERALL})"
+        line2 = (
+            f"Lowest Aux voltage of all record: N/A V, "
+            f"Timestamp: N/A (PASS condition {THRESH_OVERALL})"
+        )
     else:
-        line2 = f"Lowest Aux voltage of all record: {min_all:.2f} V, Timestamp: {ts_all} (PASS condition {THRESH_OVERALL})"
+        line2 = (
+            f"Lowest Aux voltage of all record: {min_all:.2f} V, "
+            f"Timestamp: {ts_all} (PASS condition {THRESH_OVERALL})"
+        )
 
     summary_text = line1 + "\n\n" + line2
     result = overall_result(min_between, min_all)
