@@ -15,12 +15,16 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QComboBox,
     QFileDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QMessageBox,
     QGridLayout, QTableWidget, QTableWidgetItem, QFrame, QDialog,
-    QTextEdit, QHeaderView, QAbstractItemView
+    QTextEdit, QHeaderView, QAbstractItemView, QColorDialog, QScrollArea
 )
 from PySide6.QtGui import QFont, QPixmap, QColor, QLinearGradient, QBrush, QPalette
-from PySide6.QtCore import Qt, QThread, Signal, QProcess, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QProcess, QTimer, QPropertyAnimation, QEasingCurve
 from updater import check_for_update
+from PySide6.QtCore import qInstallMessageHandler
 
+def silence_qt_warnings(msg_type, context, message):
+    pass
+qInstallMessageHandler(silence_qt_warnings)
 
 # -------------------------------------------------------
 # CONFIG
@@ -35,9 +39,8 @@ TEST_CASES = [
 ]
 
 FW_CHECKER = "FW_Config_checker.py"
-CLEAR_OUTPUTS_ON_RUN_ALL = True  # set to False to keep previous outputs
+CLEAR_OUTPUTS_ON_RUN_ALL = True
 
-# row -> script filename (inside a folder of the same base name)
 SCRIPT_BY_ROW: Dict[int, str] = {
     0: "SoC_behavior.py",
     1: "Shutdown_Process.py",
@@ -59,17 +62,388 @@ SCRIPT_BY_ROW: Dict[int, str] = {
     17: "DRIVE_CHARGE_Max_Min_Avg_CURRENT.py",
 }
 
-def _default_output_names(script_name: str) -> Dict[str, str]:
-    base = os.path.splitext(script_name)[0]
-    return {
-        "result": f"{base}_results.json",
-        "summary": f"{base}_summary.json",
-        "graph": f"{base}_plot.png",
-    }
-
-# Allow scripts ~4.5 seconds (9 * 0.5s) to persist their JSON outputs
-RESULT_POLL_ATTEMPTS = 9
+RESULT_POLL_ATTEMPTS = 10
 RESULT_POLL_DELAY_MS = 500
+
+
+# -------------------------------------------------------
+# COLOR THEME MANAGER
+# -------------------------------------------------------
+class ColorTheme:
+    def __init__(self):
+        # Default colors (matching original)
+        self.colors = {
+            "title_bg_start": "#001F6B",
+            "title_bg_mid": "#0033CC", 
+            "title_bg_end": "#4DE8FF",
+            "title_text": "#00FFFF",
+            "version_text": "white",
+            "ft_label_bg": "#1FA37A",
+            "browse_btn_bg": "#2B8CE7",
+            "make_btn_bg": "#FF0000",
+            "run_all_btn_bg": "#28A745",
+            "bms_label_bg": "#1F4EB2",
+            "stark_label_bg": "#2CBDF2",
+            "xavier_label_bg": "#1FA37A",
+            "distance_label_bg": "#1FA37A",
+            "mcu_label_bg": "#006400",
+            "serial_label_bg": "#006400",
+            "os_label_bg": "#006400",
+            "table_header_bg": "#FF0000",
+            "table_header_text": "white",
+            "testcase_text": "#1FA37A",
+            "pass_bg": "#28A745",
+            "fail_bg": "#FF0000",
+            "warning_bg": "#FFA500",
+            "running_bg": "#00138B",
+            "running_shine": "#4DE8FF",
+            "completed_bg": "#28A745",
+            "error_bg": "#FF0000",
+            "gen_btn_bg": "black",
+            "gen_btn_text": "white",
+            "vcu_btn_bg": "#28A745",
+            "bms_btn_bg": "#28A745",
+            "view_btn_bg": "#3a7bd5",
+            "graph_btn_bg": "#00b8ff",
+            "run_btn_bg": "#28A745",
+            "main_bg": "#f0f0f0",
+        }
+    
+    def get(self, key, default=None):
+        return self.colors.get(key, default)
+    
+    def set(self, key, value):
+        self.colors[key] = value
+    
+    def save_to_file(self, path="theme.json"):
+        try:
+            with open(path, "w") as f:
+                json.dump(self.colors, f, indent=4)
+        except Exception:
+            pass
+    
+    def load_from_file(self, path="theme.json"):
+        try:
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    loaded = json.load(f)
+                    self.colors.update(loaded)
+        except Exception:
+            pass
+
+
+# -------------------------------------------------------
+# COLOR CUSTOMIZATION PANEL (FIXED - BLACK BG, WHITE TEXT)
+# -------------------------------------------------------
+class ColorCustomizationPanel(QDialog):
+    def __init__(self, theme: ColorTheme, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self.setWindowTitle("🎨 Customize Colors")
+        self.setMinimumSize(580, 700)
+        self.setModal(True)
+        
+        # BLACK BACKGROUND with WHITE TEXT - completely readable
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #000000;
+                color: #ffffff;
+            }
+            QLabel {
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 12px;
+                background-color: transparent;
+            }
+            QComboBox {
+                background-color: #2a2a2a;
+                color: #ffffff;
+                border: 1px solid #555555;
+                padding: 5px;
+                border-radius: 5px;
+                min-width: 110px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2a2a2a;
+                color: #ffffff;
+                selection-background-color: #4CAF50;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #ffffff;
+                margin-right: 8px;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: #ffffff;
+                border: none;
+                padding: 8px 15px;
+                border-radius: 5px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton#reset {
+                background-color: #f44336;
+            }
+            QPushButton#reset:hover {
+                background-color: #da190b;
+            }
+            QPushButton#save {
+                background-color: #2196F3;
+            }
+            QPushButton#save:hover {
+                background-color: #0b7dda;
+            }
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QFrame {
+                background-color: #1a1a1a;
+                border-radius: 6px;
+            }
+            QFrame#preview {
+                border: 1px solid #666666;
+                border-radius: 5px;
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        
+        # Title
+        title = QLabel("🎨 COLOR CUSTOMIZATION")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; padding: 12px; background-color: #1a1a1a; border-radius: 8px; color: #00ffcc;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+        
+        # Scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        scroll_widget = QWidget()
+        scroll_widget.setStyleSheet("background-color: #000000;")
+        scroll_layout = QVBoxLayout(scroll_widget)
+        scroll_layout.setSpacing(5)
+        scroll_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Color options - grouped for better organization
+        color_groups = {
+            "🎨 TITLE BAR": [
+                ("Title Background Start", "title_bg_start"),
+                ("Title Background Middle", "title_bg_mid"),
+                ("Title Background End", "title_bg_end"),
+                ("Title Text", "title_text"),
+            ],
+            "📁 FILE SECTION": [
+                ("File Type Label BG", "ft_label_bg"),
+                ("Browse Button BG", "browse_btn_bg"),
+                ("Organize Logs Button BG", "make_btn_bg"),
+                ("Run All Button BG", "run_all_btn_bg"),
+            ],
+            "🔧 FIRMWARE LABELS": [
+                ("BMS Label BG", "bms_label_bg"),
+                ("STARK Label BG", "stark_label_bg"),
+                ("XAVIER Label BG", "xavier_label_bg"),
+                ("Distance Label BG", "distance_label_bg"),
+                ("MCU/Serial/OS Label BG", "mcu_label_bg"),
+            ],
+            "📊 TABLE SECTION": [
+                ("Table Header BG", "table_header_bg"),
+                ("Table Header Text", "table_header_text"),
+                ("Test Case Text", "testcase_text"),
+            ],
+            "✅ TEST RESULTS": [
+                ("PASS Background", "pass_bg"),
+                ("FAIL Background", "fail_bg"),
+                ("WARNING Background", "warning_bg"),
+                ("Running Background", "running_bg"),
+                ("Running Shine", "running_shine"),
+                ("Completed Background", "completed_bg"),
+                ("Error Background", "error_bg"),
+            ],
+            "🔘 BUTTONS": [
+                ("Generate Report BG", "gen_btn_bg"),
+                ("Generate Report Text", "gen_btn_text"),
+                ("View Button BG", "view_btn_bg"),
+                ("Graph Button BG", "graph_btn_bg"),
+                ("Run Button BG", "run_btn_bg"),
+            ],
+        }
+        
+        self.color_pickers = {}
+        self.color_previews = {}
+        
+        for group_name, options in color_groups.items():
+            # Group header
+            group_label = QLabel(group_name)
+            group_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #00ffcc; padding: 10px 0px 5px 5px; background-color: transparent;")
+            scroll_layout.addWidget(group_label)
+            
+            # Separator line
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setStyleSheet("background-color: #333333; max-height: 1px;")
+            scroll_layout.addWidget(sep)
+            
+            for label_text, color_key in options:
+                # Row frame
+                row_frame = QFrame()
+                row_frame.setStyleSheet("background-color: #1a1a1a; border-radius: 6px;")
+                row_layout = QHBoxLayout(row_frame)
+                row_layout.setContentsMargins(12, 8, 12, 8)
+                row_layout.setSpacing(10)
+                
+                # Label - WHITE TEXT
+                label = QLabel(label_text)
+                label.setMinimumWidth(180)
+                label.setStyleSheet("color: #ffffff; background-color: transparent; font-weight: bold;")
+                row_layout.addWidget(label)
+                
+                # Color preview
+                color_preview = QFrame()
+                color_preview.setObjectName("preview")
+                color_preview.setFixedSize(40, 28)
+                current_color = self.theme.get(color_key, "#1FA37A")
+                color_preview.setStyleSheet(f"background-color: {current_color}; border-radius: 5px; border: 1px solid #888888;")
+                row_layout.addWidget(color_preview)
+                
+                # Hex code display
+                hex_label = QLabel(current_color.upper())
+                hex_label.setStyleSheet("color: #00ffcc; font-family: monospace; font-size: 10px; background-color: #2a2a2a; padding: 4px 8px; border-radius: 4px;")
+                hex_label.setMinimumWidth(80)
+                hex_label.setAlignment(Qt.AlignCenter)
+                row_layout.addWidget(hex_label)
+                
+                # Color picker combo
+                combo = QComboBox()
+                combo.addItems(["Select...", "Red", "Green", "Blue", "Yellow", "Cyan", "Magenta", "Orange", "Purple", "Black", "White", "Custom..."])
+                combo.setMinimumWidth(110)
+                combo.color_key = color_key
+                combo.color_preview = color_preview
+                combo.hex_label = hex_label
+                combo.currentTextChanged.connect(lambda text, k=color_key, p=color_preview, h=hex_label: self.on_color_selected(text, k, p, h))
+                row_layout.addWidget(combo)
+                
+                scroll_layout.addWidget(row_frame)
+                
+                self.color_pickers[color_key] = combo
+                self.color_previews[color_key] = color_preview
+        
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+        
+        # Buttons container
+        btn_container = QFrame()
+        btn_container.setStyleSheet("background-color: #1a1a1a; border-radius: 8px; margin-top: 5px;")
+        btn_layout = QHBoxLayout(btn_container)
+        btn_layout.setSpacing(10)
+        btn_layout.setContentsMargins(15, 10, 15, 10)
+        
+        apply_btn = QPushButton("✓ APPLY CHANGES")
+        apply_btn.clicked.connect(self.apply_colors)
+        btn_layout.addWidget(apply_btn)
+        
+        reset_btn = QPushButton("↺ RESET ALL")
+        reset_btn.setObjectName("reset")
+        reset_btn.clicked.connect(self.reset_colors)
+        btn_layout.addWidget(reset_btn)
+        
+        save_btn = QPushButton("💾 SAVE THEME")
+        save_btn.setObjectName("save")
+        save_btn.clicked.connect(self.save_theme)
+        btn_layout.addWidget(save_btn)
+        
+        load_btn = QPushButton("📂 LOAD THEME")
+        load_btn.clicked.connect(self.load_theme)
+        btn_layout.addWidget(load_btn)
+        
+        layout.addWidget(btn_container)
+        
+        # Close button
+        close_btn = QPushButton("CLOSE")
+        close_btn.setStyleSheet("background-color: #6c757d; padding: 10px; font-size: 12px;")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+        
+        self.resize(600, 750)
+    
+    def on_color_selected(self, text, color_key, preview_widget, hex_label):
+        color_map = {
+            "Red": "#FF0000",
+            "Green": "#00FF00",
+            "Blue": "#0000FF",
+            "Yellow": "#FFFF00",
+            "Cyan": "#00FFFF",
+            "Magenta": "#FF00FF",
+            "Orange": "#FFA500",
+            "Purple": "#800080",
+            "Black": "#000000",
+            "White": "#FFFFFF",
+        }
+        
+        if text == "Custom...":
+            color = QColorDialog.getColor()
+            if color.isValid():
+                color_hex = color.name().upper()
+                self.theme.set(color_key, color_hex)
+                preview_widget.setStyleSheet(f"background-color: {color_hex}; border-radius: 5px; border: 1px solid #888888;")
+                hex_label.setText(color_hex)
+        elif text in color_map:
+            color_hex = color_map[text]
+            self.theme.set(color_key, color_hex)
+            preview_widget.setStyleSheet(f"background-color: {color_hex}; border-radius: 5px; border: 1px solid #888888;")
+            hex_label.setText(color_hex)
+    
+    def apply_colors(self):
+        if self.parent():
+            self.parent().apply_theme_colors()
+        QMessageBox.information(self, "Success", "✓ Colors applied successfully!")
+    
+    def reset_colors(self):
+        reply = QMessageBox.question(self, "Reset Colors", "Reset ALL colors to default?", QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            new_theme = ColorTheme()
+            for key in self.color_pickers.keys():
+                default_color = new_theme.get(key, "#1FA37A")
+                self.theme.set(key, default_color)
+                if key in self.color_previews:
+                    self.color_previews[key].setStyleSheet(f"background-color: {default_color}; border-radius: 5px; border: 1px solid #888888;")
+                if key in self.color_pickers:
+                    # Also update hex label if exists
+                    combo = self.color_pickers[key]
+                    if hasattr(combo, 'hex_label') and combo.hex_label:
+                        combo.hex_label.setText(default_color.upper())
+                    combo.setCurrentIndex(0)
+            self.apply_colors()
+    
+    def save_theme(self):
+        self.theme.save_to_file()
+        QMessageBox.information(self, "Success", "✓ Theme saved to theme.json")
+    
+    def load_theme(self):
+        self.theme.load_from_file()
+        for key in self.color_pickers.keys():
+            loaded_color = self.theme.get(key, "#1FA37A")
+            if key in self.color_previews:
+                self.color_previews[key].setStyleSheet(f"background-color: {loaded_color}; border-radius: 5px; border: 1px solid #888888;")
+            if key in self.color_pickers:
+                combo = self.color_pickers[key]
+                if hasattr(combo, 'hex_label') and combo.hex_label:
+                    combo.hex_label.setText(loaded_color.upper())
+                combo.setCurrentIndex(0)
+        self.apply_colors()
+
 
 # -------------------------------------------------------
 # JSON POPUP
@@ -101,6 +475,7 @@ class JsonDialog(QDialog):
         btn.clicked.connect(self.accept)
         layout.addWidget(btn, alignment=Qt.AlignCenter)
 
+
 # -------------------------------------------------------
 # IMAGE POPUP
 # -------------------------------------------------------
@@ -130,6 +505,7 @@ class ImageDialog(QDialog):
         btn = QPushButton("Close")
         btn.clicked.connect(self.accept)
         layout.addWidget(btn, alignment=Qt.AlignCenter)
+
 
 # -------------------------------------------------------
 # FW CHECK THREAD
@@ -161,6 +537,7 @@ class FWCheckerThread(QThread):
 
         except Exception as e:
             self.finished_err.emit(str(e))
+
 
 # -------------------------------------------------------
 # VCU RESET THREAD
@@ -230,6 +607,7 @@ class BMSResetThread(QThread):
         except Exception as e:
             self.finished_err.emit(str(e))
 
+
 # -------------------------------------------------------
 # MCU DETECTION THREAD
 # -------------------------------------------------------
@@ -261,6 +639,7 @@ class MCUDetectionThread(QThread):
         except Exception as e:
             self.finished_err.emit(str(e))
 
+
 # -------------------------------------------------------
 # MAIN GUI
 # -------------------------------------------------------
@@ -269,6 +648,10 @@ class CANLogDebugger(QWidget):
         super().__init__()
         self.setWindowTitle("CAN LOG ANALYSER")
         self.setMinimumSize(1250, 780)
+
+        # Initialize color theme
+        self.theme = ColorTheme()
+        self.theme.load_from_file()
 
         self.selected_file_path = ""
         self.logs_last_output_path: Optional[str] = None
@@ -293,17 +676,21 @@ class CANLogDebugger(QWidget):
         self.result_refresh_timer.setInterval(1000)
         self.result_refresh_timer.timeout.connect(self._refresh_pending_results)
 
+        # Initialize lists for dynamic UI elements
+        self.testcase_labels = []
+        self.run_btns = []
+        self.view_btns = []
+        self.graph_btns = []
+
         # ---------------- TITLE ----------------
         self.version_label = QLabel(self._read_version_text())
         self.version_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
         self.version_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.version_label.setStyleSheet("color:white; padding:0 12px; background:transparent;")
         self.version_label.setToolTip("Read from version.txt")
 
         title = QLabel("CAN LOG ANALYSER")
         title.setFont(QFont("Segoe UI", 20, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("color:#00FFFF; padding:10px; font-weight:bold; background:transparent;")
 
         title_bar = QFrame()
         title_bar_layout = QHBoxLayout()
@@ -311,35 +698,44 @@ class CANLogDebugger(QWidget):
         title_bar_layout.setSpacing(10)
         title_bar_layout.addWidget(self.version_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
         title_bar_layout.addWidget(title, 1, Qt.AlignCenter)
+        
+        # Theme button
+        self.theme_btn = QPushButton("🎨 Theme")
+        self.theme_btn.setStyleSheet("background:#6c757d; color:white; font-weight:bold; padding:5px 15px; border-radius:5px;")
+        self.theme_btn.clicked.connect(self.open_theme_panel)
+        title_bar_layout.addWidget(self.theme_btn, 0, Qt.AlignRight | Qt.AlignVCenter)
+        
         title_bar.setLayout(title_bar_layout)
 
-        self._init_title_animation(title, title_bar)
+        self.title_label = title
+        self.title_container = title_bar
+        self.title_anim_step = 0
+        self.title_anim_timer = QTimer(self)
+        self.title_anim_timer.timeout.connect(self._update_title_glow)
+        self.title_anim_timer.start(120)
+        
+        self.make_btn_animating = False
+        self.run_all_animating = False
 
         # ---------------------------------------------------
         # LEFT PANEL
         # ---------------------------------------------------
         ft_label = QLabel("Select file type")
-        ft_label.setStyleSheet("background:#1FA37A; color:white; padding:8px; font-weight:bold;")
 
         self.ft_combo = QComboBox()
         self.ft_combo.addItems([".trc", ".log", ".csv", ".xlsx"])
 
         self.browse_btn = QPushButton("Browse File")
-        self.browse_btn.setStyleSheet("background:#2B8CE7; color:white; font-weight:bold;")
         self.browse_btn.clicked.connect(self.on_browse)
 
         self.file_box = QLineEdit("No file selected")
         self.file_box.setReadOnly(True)
 
         self.make_btn = QPushButton("MAKE YOUR LOGS ORGANISED")
-        self.make_btn.setStyleSheet("background:#FF0000; color:white; font-weight:bold;")
         self.make_btn.clicked.connect(self.on_make_logs)
-        self.make_btn_animating = False
-        self.run_all_animating = False
 
         self.run_all_btn = QPushButton("RUN ALL TEST CASES")
         self.run_all_btn.setEnabled(False)
-        self.run_all_btn.setStyleSheet("background:#28A745; color:white; font-weight:bold;")
         self.run_all_btn.clicked.connect(self.start_all_tests)
 
         # ---------------- Firmware Fields ----------------
@@ -348,11 +744,6 @@ class CANLogDebugger(QWidget):
             box = QLineEdit()
             box.setReadOnly(True)
             return lbl, box
-
-        def style_label(widget: QLabel, bg_color: str):
-            widget.setStyleSheet(
-                f"background:{bg_color}; color:white; padding:6px; font-weight:bold;"
-            )
 
         (self.lb_hw, self.tx_hw) = fw_field("BMS HW VERSION")
         (self.lb_fw, self.tx_fw) = fw_field("BMS FIRMWARE")
@@ -368,25 +759,11 @@ class CANLogDebugger(QWidget):
         (self.lb_serial, self.tx_serial) = fw_field("SERIAL NO")
         (self.lb_os, self.tx_os) = fw_field("OS Version & OS Build No")
 
-        bms_labels = [
-            self.lb_hw,
-            self.lb_fw,
-            self.lb_cfg,
-            self.lb_git,
-            self.lb_manifest,
-        ]
-        for lbl in bms_labels:
-            style_label(lbl, "#1F4EB2")
-
-        for lbl in (self.lb_stark_fw, self.lb_stark_cfg):
-            style_label(lbl, "#2CBDF2")
-
-        style_label(self.lb_xavier_fw, "#1FA37A")
-        style_label(self.lb_distance, "#1FA37A")
-
-        style_label(self.lb_mcu, "#006400")
-        style_label(self.lb_serial, "#006400")
-        style_label(self.lb_os, "#006400")
+        self.bms_labels = [self.lb_hw, self.lb_fw, self.lb_cfg, self.lb_git, self.lb_manifest]
+        self.stark_labels = [self.lb_stark_fw, self.lb_stark_cfg]
+        self.xavier_labels = [self.lb_xavier_fw]
+        self.distance_labels = [self.lb_distance]
+        self.mcu_labels = [self.lb_mcu, self.lb_serial, self.lb_os]
 
         grid = QGridLayout()
         grid.setSpacing(8)
@@ -402,7 +779,6 @@ class CANLogDebugger(QWidget):
             (self.lb_stark_cfg, self.tx_stark_cfg),
             (self.lb_xavier_fw, self.tx_xavier_fw),
             (self.lb_distance, self.tx_distance),
-
             (self.lb_mcu, self.tx_mcu),
             (self.lb_serial, self.tx_serial),
             (self.lb_os, self.tx_os),
@@ -432,23 +808,13 @@ class CANLogDebugger(QWidget):
         for t in [self.tx_vcu_value, self.tx_vcu_result, self.tx_bms_value, self.tx_bms_result]:
             t.setReadOnly(True)
 
-        # Store default palettes so we can restore styles cleanly
         self.vcu_value_palette_default = self.tx_vcu_value.palette()
         self.vcu_result_palette_default = self.tx_vcu_result.palette()
         self.bms_value_palette_default = self.tx_bms_value.palette()
         self.bms_result_palette_default = self.tx_bms_result.palette()
 
-        # Auto-driven; disable manual clicks
         self.btn_vcu.setEnabled(False)
         self.btn_bms.setEnabled(False)
-        green_btn_style = (
-            "QPushButton { background:#28A745; color:white; font-weight:bold;"
-            "border:1px solid #1f7a33; border-radius:4px; padding:6px; }"
-            "QPushButton:disabled { background:#28A745; color:white;"
-            "border:1px solid #1f7a33; }"
-        )
-        self.btn_vcu.setStyleSheet(green_btn_style)
-        self.btn_bms.setStyleSheet(green_btn_style)
         self.btn_vcu.setFocusPolicy(Qt.NoFocus)
         self.btn_bms.setFocusPolicy(Qt.NoFocus)
 
@@ -456,7 +822,6 @@ class CANLogDebugger(QWidget):
         extra_grid.addWidget(self.btn_vcu, 0, 0)
         extra_grid.addWidget(self.tx_vcu_value, 0, 1)
         extra_grid.addWidget(self.tx_vcu_result, 0, 2)
-
         extra_grid.addWidget(self.btn_bms, 1, 0)
         extra_grid.addWidget(self.tx_bms_value, 1, 1)
         extra_grid.addWidget(self.tx_bms_result, 1, 2)
@@ -465,16 +830,14 @@ class CANLogDebugger(QWidget):
         extra_frame.setLayout(extra_grid)
 
         # ---------------------------------------------------
-        # GENERATE TRACKER BUTTONS (SPLIT INTO 2)
+        # GENERATE TRACKER BUTTONS
         # ---------------------------------------------------
         btn_layout = QHBoxLayout()
 
-        self.gen_btn = QPushButton("CREATE REPORT SUMMARY")
-        self.gen_btn.setStyleSheet("background:black; color:white; padding:10px; font-weight:bold;")
+        self.gen_btn = QPushButton("📄 CREATE REPORT")
         self.gen_btn.clicked.connect(self.generate_tracker)
 
-        self.gen_excel_btn = QPushButton("CREATE EXCEL TRACKER")
-        self.gen_excel_btn.setStyleSheet("background:black; color:white; padding:10px; font-weight:bold;")
+        self.gen_excel_btn = QPushButton("📄 CREATE EXCEL TRACKER")
         self.gen_excel_btn.clicked.connect(self.generate_excel_tracker)
 
         btn_layout.addWidget(self.gen_btn)
@@ -510,12 +873,6 @@ class CANLogDebugger(QWidget):
         # ---------------------------------------------------
         # RIGHT TABLE PANEL
         # ---------------------------------------------------
-        # Columns:
-        # 0 = TEST CASE (with per-test RUN button)
-        # 1 = STATUS
-        # 2 = View Results
-        # 3 = View Graph
-        # 4 = Result (PASS/FAIL)
         table = QTableWidget(len(TEST_CASES), 5)
         table.setHorizontalHeaderLabels(
             ["TEST CASE", "STATUS", "View Results", "View Graph", "Result"]
@@ -527,10 +884,9 @@ class CANLogDebugger(QWidget):
         if result_header_item:
             result_header_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
-        header = table.horizontalHeader()
-        header.setStyleSheet("QHeaderView::section { background-color: #FF0000; color: white; font-weight: bold; }")
+        self.table_header = table.horizontalHeader()
         for c in range(5):
-            header.setSectionResizeMode(c, QHeaderView.Fixed)
+            self.table_header.setSectionResizeMode(c, QHeaderView.Fixed)
 
         total_ratio = 11 + 5 + 5 + 5 + 3
         total_width = 900
@@ -546,11 +902,9 @@ class CANLogDebugger(QWidget):
             if i == 0:
                 display_name = "SoC BEHAVIOR + SoC STUCK"
 
-            # Base item for data/sorting only; visual handled by widget below
             name_item = QTableWidgetItem(display_name)
             table.setItem(i, 0, name_item)
 
-            # Composite widget in TEST CASE column: label + RUN button
             cell_widget = QWidget()
             cell_widget.setStyleSheet("background:white;")
             h_layout = QHBoxLayout(cell_widget)
@@ -558,13 +912,13 @@ class CANLogDebugger(QWidget):
             h_layout.setSpacing(6)
 
             lbl = QLabel(display_name)
-            lbl.setStyleSheet("color:#1FA37A; font-weight:bold; background:white;")
+            lbl.setStyleSheet("font-weight:bold; background:white;")
             h_layout.addWidget(lbl, 1)
 
             btn_run = QPushButton("▶")
             btn_run.setToolTip("Run only this test case")
             btn_run.setStyleSheet(
-                "QPushButton { background:#28A745; color:white; font-weight:bold; border-radius:12px; "
+                "QPushButton { color:white; font-weight:bold; border-radius:12px; "
                 "min-width:24px; max-width:24px; min-height:24px; max-height:24px; }"
                 "QPushButton:pressed { background:#1f7a33; }"
             )
@@ -588,6 +942,11 @@ class CANLogDebugger(QWidget):
             btn_g = QPushButton("Graph")
             btn_g.clicked.connect(lambda _, r=i: self.on_view_graph(r))
             table.setCellWidget(i, 3, btn_g)
+            
+            self.testcase_labels.append(lbl)
+            self.run_btns.append(btn_run)
+            self.view_btns.append(btn_r)
+            self.graph_btns.append(btn_g)
 
         self.test_table = table
 
@@ -609,9 +968,196 @@ class CANLogDebugger(QWidget):
         final.addLayout(main)
 
         self.setLayout(final)
+        
+        # Store references for dynamic styling
+        self.ft_label = ft_label
+        self.title_bar = title_bar
+        self.title = title
+        self.md_frame = md_frame
+        self.extra_frame = extra_frame
+        self.btn_frame = btn_frame
+        self.left_frame = left_frame
+        self.right_frame = right_frame
+        self.view_btns = []
+        self.graph_btns = []
+        
+        # Apply initial theme
+        self.apply_theme_colors()
+        
         self.heartbeat_timer = QTimer(self)
         self.heartbeat_timer.timeout.connect(send_heartbeat)
         self.heartbeat_timer.start(5000)
+
+    # ======================================================
+    # THEME MANAGEMENT
+    # ======================================================
+    def open_theme_panel(self):
+        dialog = ColorCustomizationPanel(self.theme, self)
+        dialog.exec()
+    
+    def apply_theme_colors(self):
+        # Title bar gradient
+        gradient = (
+            "qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
+            f"stop:0 {self.theme.get('title_bg_start')}, "
+            f"stop:0.5 {self.theme.get('title_bg_mid')}, "
+            f"stop:1 {self.theme.get('title_bg_end')})"
+        )
+        self.title_container.setStyleSheet(f"background:{gradient}; border:0px;")
+        self.title_label.setStyleSheet(
+            f"color:{self.theme.get('title_text')}; padding:10px; font-weight:bold; background:transparent;"
+        )
+        self.version_label.setStyleSheet(
+            f"color:{self.theme.get('version_text')}; padding:0 12px; font-weight:bold; background:transparent;"
+        )
+        
+        # File type label
+        self.ft_label.setStyleSheet(
+            f"background:{self.theme.get('ft_label_bg')}; color:white; padding:8px; font-weight:bold;"
+        )
+        
+        # Buttons
+        self.browse_btn.setStyleSheet(
+            f"background:{self.theme.get('browse_btn_bg')}; color:white; font-weight:bold;"
+        )
+        self.make_btn.setStyleSheet(
+            f"background:{self.theme.get('make_btn_bg')}; color:white; font-weight:bold;"
+        )
+        self.run_all_btn.setStyleSheet(
+            f"background:{self.theme.get('run_all_btn_bg')}; color:white; font-weight:bold;"
+        )
+        
+        # Firmware labels
+        for lbl in self.bms_labels:
+            lbl.setStyleSheet(
+                f"background:{self.theme.get('bms_label_bg')}; color:white; padding:6px; font-weight:bold;"
+            )
+        for lbl in self.stark_labels:
+            lbl.setStyleSheet(
+                f"background:{self.theme.get('stark_label_bg')}; color:white; padding:6px; font-weight:bold;"
+            )
+        for lbl in self.xavier_labels:
+            lbl.setStyleSheet(
+                f"background:{self.theme.get('xavier_label_bg')}; color:white; padding:6px; font-weight:bold;"
+            )
+        for lbl in self.distance_labels:
+            lbl.setStyleSheet(
+                f"background:{self.theme.get('distance_label_bg')}; color:white; padding:6px; font-weight:bold;"
+            )
+        for lbl in self.mcu_labels:
+            lbl.setStyleSheet(
+                f"background:{self.theme.get('mcu_label_bg')}; color:white; padding:6px; font-weight:bold;"
+            )
+        
+        # Table header
+        self.table_header.setStyleSheet(
+            f"QHeaderView::section {{ background-color: {self.theme.get('table_header_bg')}; "
+            f"color: {self.theme.get('table_header_text')}; font-weight: bold; }}"
+        )
+        
+        # Test case text color
+        for lbl in self.testcase_labels:
+            lbl.setStyleSheet(
+                f"color:{self.theme.get('testcase_text')}; font-weight:bold; background:white;"
+            )
+        
+        # Run buttons
+        for btn in self.run_btns:
+            btn.setStyleSheet(
+                f"QPushButton {{ background:{self.theme.get('run_btn_bg')}; color:white; font-weight:bold; border-radius:12px; "
+                "min-width:24px; max-width:24px; min-height:24px; max-height:24px; }}"
+                "QPushButton:pressed { background:#1f7a33; }"
+            )
+        
+        # View buttons
+        for btn in self.view_btns:
+            btn.setStyleSheet(
+                f"background:{self.theme.get('view_btn_bg')}; color:white; font-weight:bold;"
+            )
+        
+        # Graph buttons
+        for btn in self.graph_btns:
+            btn.setStyleSheet(
+                f"background:{self.theme.get('graph_btn_bg')}; color:white; font-weight:bold;"
+            )
+        
+        # Generate buttons
+        self.gen_btn.setStyleSheet(
+            f"background:{self.theme.get('gen_btn_bg')}; color:{self.theme.get('gen_btn_text')}; padding:10px; font-weight:bold;"
+        )
+        self.gen_excel_btn.setStyleSheet(
+            f"background:{self.theme.get('gen_btn_bg')}; color:{self.theme.get('gen_btn_text')}; padding:10px; font-weight:bold;"
+        )
+        
+        # VCU/BMS buttons
+        self.btn_vcu.setStyleSheet(
+            f"QPushButton {{ background:{self.theme.get('vcu_btn_bg')}; color:white; font-weight:bold; "
+            "border:1px solid #1f7a33; border-radius:4px; padding:6px; }}"
+            "QPushButton:disabled { background:#28A745; color:white; border:1px solid #1f7a33; }"
+        )
+        self.btn_bms.setStyleSheet(
+            f"QPushButton {{ background:{self.theme.get('bms_btn_bg')}; color:white; font-weight:bold; "
+            "border:1px solid #1f7a33; border-radius:4px; padding:6px; }}"
+            "QPushButton:disabled { background:#28A745; color:white; border:1px solid #1f7a33; }"
+        )
+        
+        # Refresh running visuals
+        if self.running_rows:
+            phase = self.title_anim_step / 100.0
+            for row in list(self.running_rows):
+                self._set_running_visual(row, phase)
+        
+        # Refresh result cells
+        for row in self.pending_result_rows:
+            self.update_result_cell(row)
+
+    def _update_title_glow(self):
+        if not getattr(self, "title_label", None):
+            return
+        self.title_anim_step = (self.title_anim_step + 1) % 100
+        highlight = self.title_anim_step / 100.0
+        start = max(0.0, highlight - 0.2)
+        end = min(1.0, highlight + 0.2)
+        gradient = (
+            "qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
+            f"stop:0 {self.theme.get('title_bg_start')}, "
+            f"stop:{start:.2f} {self.theme.get('title_bg_mid')}, "
+            f"stop:{highlight:.2f} {self.theme.get('title_bg_end')}, "
+            f"stop:{end:.2f} {self.theme.get('title_bg_mid')}, "
+            f"stop:1 {self.theme.get('title_bg_start')})"
+        )
+        
+        if getattr(self, "title_container", None):
+            self.title_container.setStyleSheet(f"background:{gradient}; border:0px;")
+            self.title_label.setStyleSheet(
+                f"color:{self.theme.get('title_text')}; padding:10px; font-weight:bold; background:transparent;"
+            )
+            if getattr(self, "version_label", None):
+                self.version_label.setStyleSheet(
+                    f"color:{self.theme.get('version_text')}; padding:0 12px; font-weight:bold; background:transparent;"
+                )
+        
+        if getattr(self, "make_btn_animating", False) and getattr(self, "make_btn", None):
+            btn_style = (
+                "color:white; font-weight:bold; padding:10px;"
+                f"background:{gradient};"
+            )
+            self.make_btn.setStyleSheet(btn_style)
+
+        if getattr(self, "run_all_animating", False) and getattr(self, "run_all_btn", None):
+            run_gradient = (
+                "qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
+                f"stop:0 #0A2F0A, stop:{start:.2f} #0F6B0F, stop:{highlight:.2f} #32CD32, "
+                f"stop:{end:.2f} #0F6B0F, stop:1 #0A2F0A)"
+            )
+            self.run_all_btn.setStyleSheet(
+                f"color:white; font-weight:bold; padding:10px; background:{run_gradient};"
+            )
+
+        if getattr(self, "running_rows", None) and getattr(self, "test_table", None):
+            phase = self.title_anim_step / 100.0
+            for row in list(self.running_rows):
+                self._set_running_visual(row, phase)
 
     # ======================================================
     # UTILS: CELL STYLING & SCRIPT PATHS
@@ -625,73 +1171,8 @@ class CANLogDebugger(QWidget):
             raw = ""
         except Exception:
             raw = ""
-
         raw = raw.lstrip("vV")
         return f"v{raw or '0.0.0'}"
-
-    def _init_title_animation(self, label: QLabel, container: Optional[QFrame] = None):
-        """Animate title with a moving glow effect."""
-        self.title_label = label
-        self.title_container = container
-        self.title_anim_step = 0
-        self.title_anim_timer = QTimer(self)
-        self.title_anim_timer.timeout.connect(self._update_title_glow)
-        self.title_anim_timer.start(120)
-        self._update_title_glow()
-
-    def _update_title_glow(self):
-        if not getattr(self, "title_label", None):
-            return
-        self.title_anim_step = (self.title_anim_step + 1) % 100
-        highlight = self.title_anim_step / 100.0
-        start = max(0.0, highlight - 0.2)
-        end = min(1.0, highlight + 0.2)
-        gradient = (
-            "qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
-            f"stop:0 #001F6B, stop:{start:.2f} #0033CC, stop:{highlight:.2f} #4DE8FF, "
-            f"stop:{end:.2f} #0033CC, stop:1 #001F6B)"
-        )
-        style = (
-            "color:#00FFFF; padding:10px; font-weight:bold;"
-            f"background:{gradient};"
-        )
-        if getattr(self, "title_container", None):
-            self.title_container.setStyleSheet(f"background:{gradient}; border:0px;")
-            self.title_label.setStyleSheet(
-                "color:#00FFFF; padding:10px; font-weight:bold; background:transparent;"
-            )
-            if getattr(self, "version_label", None):
-                self.version_label.setStyleSheet(
-                    "color:white; padding:0 12px; font-weight:bold; background:transparent;"
-                )
-        else:
-            self.title_label.setStyleSheet(style)
-
-        # Mirror the running glow on the log organiser button while active
-        if getattr(self, "make_btn_animating", False) and getattr(self, "make_btn", None):
-            btn_style = (
-                "color:white; font-weight:bold; padding:10px;"
-                "background:qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
-                f"stop:0 #001F6B, stop:{start:.2f} #0033CC, stop:{highlight:.2f} #4DE8FF, "
-                f"stop:{end:.2f} #0033CC, stop:1 #001F6B);"
-            )
-            self.make_btn.setStyleSheet(btn_style)
-
-        # Apply a green running glow to the RUN ALL button while tests are running
-        if getattr(self, "run_all_animating", False) and getattr(self, "run_all_btn", None):
-            run_style = (
-                "color:white; font-weight:bold; padding:10px;"
-                "background:qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
-                f"stop:0 #0A2F0A, stop:{start:.2f} #0F6B0F, stop:{highlight:.2f} #32CD32, "
-                f"stop:{end:.2f} #0F6B0F, stop:1 #0A2F0A);"
-            )
-            self.run_all_btn.setStyleSheet(run_style)
-
-        # Apply running reflection on status cells
-        if getattr(self, "running_rows", None) and getattr(self, "test_table", None):
-            phase = self.title_anim_step / 100.0
-            for row in list(self.running_rows):
-                self._set_running_visual(row, phase)
 
     def _set_colored_cell(self, row: int, col: int, text: str, bg_color: str, align=Qt.AlignCenter, tooltip=None):
         item = QTableWidgetItem(text)
@@ -706,20 +1187,11 @@ class CANLogDebugger(QWidget):
         self.test_table.setItem(row, col, item)
 
     def _mark_row_running(self, row: int):
-        """Set status cell to Running with static styling."""
         self.running_rows.add(row)
         self.running_started_at[row] = time.time()
-        self._set_colored_cell(row, 1, "Running", "#00138B")  # static blue
-
-    def _blend_colors(self, c1: QColor, c2: QColor, t: float) -> QColor:
-        t = max(0.0, min(1.0, t))
-        r = int(c1.red() + (c2.red() - c1.red()) * t)
-        g = int(c1.green() + (c2.green() - c1.green()) * t)
-        b = int(c1.blue() + (c2.blue() - c1.blue()) * t)
-        return QColor(r, g, b)
+        self._set_colored_cell(row, 1, "Running", self.theme.get("running_bg"))
 
     def _set_running_visual(self, row: int, phase: float):
-        """Animate running status cell with a moving light-blue reflection and static text."""
         item = self.test_table.item(row, 1)
         if not item:
             return
@@ -728,11 +1200,10 @@ class CANLogDebugger(QWidget):
             item.setText(f"Running {pct:.1f}%")
         else:
             item.setText("Running")
-        base = QColor("#00124F")
-        shine = QColor("#4DE8FF")
+        base = QColor(self.theme.get("running_bg"))
+        shine = QColor(self.theme.get("running_shine"))
         pos = phase % 1.0
         band = 0.18
-        # smooth easing for the band movement
         eased = 0.5 * (1 + math.sin(2 * math.pi * pos))
         center = eased
         g = QLinearGradient(0, 0, 1, 0)
@@ -756,10 +1227,6 @@ class CANLogDebugger(QWidget):
             self.result_refresh_timer.stop()
 
     def _maybe_finish_run_all(self):
-        """
-        Re-enable the RUN ALL button only after all processes have stopped
-        and pending result rows have been consumed.
-        """
         if not self.processes:
             return
         if any(p.state() != QProcess.NotRunning for p in self.processes.values()):
@@ -768,7 +1235,7 @@ class CANLogDebugger(QWidget):
             return
         self.run_all_btn.setEnabled(True)
         self.run_all_btn.setText("RUN ALL TEST CASES")
-        self.run_all_btn.setStyleSheet("background:#28A745; color:white; font-weight:bold;")
+        self.run_all_btn.setStyleSheet(f"background:{self.theme.get('run_all_btn_bg')}; color:white; font-weight:bold;")
         self.run_all_animating = False
 
     def _refresh_pending_results(self):
@@ -779,38 +1246,18 @@ class CANLogDebugger(QWidget):
             self.update_result_cell(row)
         self._ensure_result_timer_running()
 
-    def _style_testcase_cell(self, item: QTableWidgetItem):
-        """Style visible test case names."""
-        if not item:
-            return
-        item.setForeground(QColor("#1FA37A"))  # green text
-        item.setBackground(QColor("white"))
-        font = item.font()
-        font.setBold(True)
-        item.setFont(font)
-
     def _get_test_script_paths(self, row: int):
-        """
-        Returns (folder_path, script_path) for a given row.
-        Folder name is assumed to be base name of script.
-        E.g. SoC_behavior.py -> TRC TEST CASES/SoC_behavior/SoC_behavior.py
-        """
         script_name = SCRIPT_BY_ROW.get(row)
         if not script_name:
             return None, None
         folder_name = os.path.splitext(script_name)[0]
-
-        # Primary path based on selected file type
         folder_path = os.path.join(self.tests_folder, folder_name)
         script_path = os.path.join(folder_path, script_name)
-
-        # Fallback to default TRC folder if script not found (handles CSV/XLSX cases)
         if not os.path.exists(script_path):
             fallback_folder = os.path.join(self.default_tests_folder, folder_name)
             fallback_script = os.path.join(fallback_folder, script_name)
             if os.path.exists(fallback_script):
                 return fallback_folder, fallback_script
-
         return folder_path, script_path
 
     def _tests_folder_for_extension(self, ext: str) -> str:
@@ -838,13 +1285,21 @@ class CANLogDebugger(QWidget):
         for row, script_name in SCRIPT_BY_ROW.items():
             test_name = TEST_CASES[row].lower()
             entry = config_data.get(test_name, {})
-            defaults = _default_output_names(script_name)
+            defaults = self._default_output_names(script_name)
             output_by_row[row] = {
                 "result": entry.get("result", defaults["result"]),
                 "summary": entry.get("summary", defaults["summary"]),
                 "graph": entry.get("graph", defaults["graph"]),
             }
         return output_by_row
+
+    def _default_output_names(self, script_name: str) -> Dict[str, str]:
+        base = os.path.splitext(script_name)[0]
+        return {
+            "result": f"{base}_results.json",
+            "summary": f"{base}_summary.json",
+            "graph": f"{base}_plot.png",
+        }
 
     def _get_output_file_path(self, row: int, kind: str) -> Optional[str]:
         folder_path, _ = self._get_test_script_paths(row)
@@ -859,7 +1314,6 @@ class CANLogDebugger(QWidget):
         return self._get_output_file_path(row, "result")
 
     def _clear_all_outputs(self):
-        """Delete previously generated result/summary/graph files for all test cases."""
         for row, files in self.output_files.items():
             for kind in ("result", "summary", "graph"):
                 path = self._get_output_file_path(row, kind)
@@ -870,7 +1324,6 @@ class CANLogDebugger(QWidget):
                         pass
 
     def _clear_outputs_for_row(self, row: int):
-        """Delete result/summary/graph files for a single test case row."""
         files = self.output_files.get(row, {})
         for kind in ("result", "summary", "graph"):
             path = self._get_output_file_path(row, kind)
@@ -884,8 +1337,8 @@ class CANLogDebugger(QWidget):
         logs_script = os.path.join(self.script_dir, "logs_organised.py")
 
         if not os.path.exists(logs_script):
-                QMessageBox.warning(self, "Error", f"logs_organised.py not found:\n{logs_script}")
-                return
+            QMessageBox.warning(self, "Error", f"logs_organised.py not found:\n{logs_script}")
+            return
 
         self.logs_last_output_path = None
 
@@ -919,7 +1372,7 @@ class CANLogDebugger(QWidget):
     def on_logs_finished(self):
         self.make_btn_animating = False
         self.make_btn.setText("LOGS ARE ORGANISED ✅, RETRY ?")
-        self.make_btn.setStyleSheet("background-color: #28A745; color: white; font-weight: bold;")
+        self.make_btn.setStyleSheet(f"background-color: {self.theme.get('completed_bg')}; color: white; font-weight: bold;")
         self.make_btn.setEnabled(True)
 
         if not self.logs_last_output_path:
@@ -933,16 +1386,13 @@ class CANLogDebugger(QWidget):
                     self.logs_last_output_path = candidate
 
     def _on_logs_stdout(self):
-        """Capture logs_organised.py stdout and remember the FINAL output path."""
         proc = getattr(self, "logs_proc", None)
         if not proc:
             return
-
         try:
             data = proc.readAllStandardOutput().data().decode("utf-8", errors="ignore")
         except Exception:
             return
-
         for line in data.splitlines():
             m = re.search(r"Output file saved as:\s*(.+)", line)
             if m:
@@ -962,7 +1412,6 @@ class CANLogDebugger(QWidget):
             self.restore_browse_button()
 
     def _handle_file_selected(self, path: str):
-        """Common handler when a TRC/log file is chosen."""
         if not path:
             return
 
@@ -1141,7 +1590,6 @@ class CANLogDebugger(QWidget):
             except Exception:
                 return f"{val} km" if val else ""
 
-        # Prefer new keyed distance; fallback if older key used
         dist_val = info.get("DISTANCE_COVERED_KM", info.get("DISTANCE_COVERED", ""))
         self.tx_distance.setText(_fmt_dist(dist_val))
 
@@ -1212,9 +1660,9 @@ class CANLogDebugger(QWidget):
             widget.setAlignment(Qt.AlignCenter)
 
         if result == "PASS":
-            bg, fg = "#28A745", "white"
+            bg, fg = self.theme.get("pass_bg"), "white"
         elif result == "FAIL":
-            bg, fg = "#FF0000", "white"
+            bg, fg = self.theme.get("fail_bg"), "white"
         else:
             bg, fg = "", ""
 
@@ -1236,9 +1684,9 @@ class CANLogDebugger(QWidget):
             widget.setAlignment(Qt.AlignCenter)
 
         if result == "PASS":
-            bg, fg = "#28A745", "white"
+            bg, fg = self.theme.get("pass_bg"), "white"
         elif result == "FAIL":
-            bg, fg = "#FF0000", "white"
+            bg, fg = self.theme.get("fail_bg"), "white"
         else:
             bg, fg = "", ""
 
@@ -1256,7 +1704,6 @@ class CANLogDebugger(QWidget):
             QMessageBox.warning(self, "Error", "Browse a file first")
             return
 
-        # Do not start RUN ALL if any tests are already running (single or batch)
         if any(p.state() != QProcess.NotRunning for p in self.processes.values()):
             QMessageBox.information(
                 self,
@@ -1265,19 +1712,17 @@ class CANLogDebugger(QWidget):
             )
             return
 
-        # Clear previously generated outputs before running everything (configurable)
         if CLEAR_OUTPUTS_ON_RUN_ALL:
             self._clear_all_outputs()
 
         self.run_all_btn.setEnabled(False)
         self.run_all_btn.setText("RUNNING... Pls Wait")
         self.run_all_animating = True
-        self._update_title_glow()  # kick off glow immediately
+        self._update_title_glow()
 
         self.pending_result_rows.clear()
         self._ensure_result_timer_running()
 
-        # Reset status and result columns
         for i in range(len(TEST_CASES)):
             status_item = QTableWidgetItem("Not Run")
             status_item.setTextAlignment(Qt.AlignCenter)
@@ -1296,20 +1741,17 @@ class CANLogDebugger(QWidget):
             folder_path, script_path = self._get_test_script_paths(row)
 
             if not folder_path or not os.path.exists(script_path):
-                # Missing script/folder
-                self._set_colored_cell(row, 1, "Missing/Incorrect", "#FF0000")
+                self._set_colored_cell(row, 1, "Missing/Incorrect", self.theme.get("error_bg"))
                 continue
 
             self.pending_result_rows.add(row)
             self._ensure_result_timer_running()
 
-            # Mark as running
             self._mark_row_running(row)
 
             proc = QProcess(self)
             proc.setWorkingDirectory(folder_path)
 
-            # Capture row in lambda default
             proc.finished.connect(lambda exitCode, _status, r=row: self.on_test_finished(r, exitCode))
             proc.errorOccurred.connect(lambda _e, r=row: self.on_test_error(r))
             proc.readyReadStandardOutput.connect(lambda r=row: self._on_test_stdout(r))
@@ -1317,34 +1759,28 @@ class CANLogDebugger(QWidget):
             proc.start(python, [script, self.selected_file_path])
             self.processes[row] = proc
 
-        # Edge case: if nothing started, reset button immediately
         if not self.processes:
             self.run_all_btn.setEnabled(True)
             self.run_all_btn.setText("RUN ALL TEST CASES")
-            self.run_all_btn.setStyleSheet("background:#28A745; color:white; font-weight:bold;")
+            self.run_all_btn.setStyleSheet(f"background:{self.theme.get('run_all_btn_bg')}; color:white; font-weight:bold;")
             self.run_all_animating = False
 
     # ======================================================
     # RUN SINGLE TEST CASE
     # ======================================================
     def start_single_test(self, row: int):
-        """Run only the selected test case, with live progress updates."""
         if not self.selected_file_path:
             QMessageBox.warning(self, "Error", "Browse a file first")
             return
 
-        # Prevent re-running if this row is already in progress
         proc = self.processes.get(row)
         if proc and proc.state() != QProcess.NotRunning:
             QMessageBox.information(self, "Info", "This test is already running.")
             return
 
-        # Optionally clear previous outputs for ALL tests, so every run (even single)
-        # starts with a clean set of result/summary/graph files.
         if CLEAR_OUTPUTS_ON_RUN_ALL:
-            self._clear_all_outputs()
+            self._clear_outputs_for_row(row)
 
-        # Reset status/result cells for this row
         status_item = QTableWidgetItem("Not Run")
         status_item.setTextAlignment(Qt.AlignCenter)
         self.test_table.setItem(row, 1, status_item)
@@ -1354,16 +1790,14 @@ class CANLogDebugger(QWidget):
 
         folder_path, script_path = self._get_test_script_paths(row)
         if not folder_path or not os.path.exists(script_path):
-            self._set_colored_cell(row, 1, "Missing/Incorrect", "#FF0000")
+            self._set_colored_cell(row, 1, "Missing/Incorrect", self.theme.get("error_bg"))
             return
 
         python = sys.executable
 
-        # Track as pending so the result cell updates automatically
         self.pending_result_rows.add(row)
         self._ensure_result_timer_running()
 
-        # Reset row-specific running state and mark as running
         self.running_rows.discard(row)
         self.running_started_at.pop(row, None)
         self.running_pct.pop(row, None)
@@ -1384,14 +1818,11 @@ class CANLogDebugger(QWidget):
         self.running_started_at.pop(row, None)
         self.running_pct.pop(row, None)
         if exitCode == 0:
-            # Completed OK
-            self._set_colored_cell(row, 1, "Completed", "#28A745")
-            # Try to update PASS/FAIL for this row
+            self._set_colored_cell(row, 1, "Completed", self.theme.get("completed_bg"))
             if not self.update_result_cell(row):
                 self._schedule_result_update(row)
         else:
-            # Script ran but error/failed
-            self._set_colored_cell(row, 1, "Missing/Incorrect", "#FF0000")
+            self._set_colored_cell(row, 1, "Missing/Incorrect", self.theme.get("error_bg"))
             if not self.update_result_cell(row):
                 self._schedule_result_update(row)
 
@@ -1401,11 +1832,10 @@ class CANLogDebugger(QWidget):
         self.running_rows.discard(row)
         self.running_started_at.pop(row, None)
         self.running_pct.pop(row, None)
-        self._set_colored_cell(row, 1, "Missing/Incorrect", "#FF0000")
+        self._set_colored_cell(row, 1, "Missing/Incorrect", self.theme.get("error_bg"))
         self._maybe_finish_run_all()
 
     def _on_test_stdout(self, row: int):
-        """Handle stdout from a running test process to update live progress."""
         proc = self.processes.get(row)
         if not proc:
             return
@@ -1414,7 +1844,6 @@ class CANLogDebugger(QWidget):
         except Exception:
             return
 
-        updated = False
         for line in data.splitlines():
             if not line.startswith("PROGRESS"):
                 continue
@@ -1429,14 +1858,11 @@ class CANLogDebugger(QWidget):
             prev = self.running_pct.get(row, 0.0)
             if pct >= prev:
                 self.running_pct[row] = pct
-                updated = True
 
-        if updated:
-            # Apply immediate text refresh; background animation updates on its own timer
+        if row in self.running_pct:
             self._set_running_visual(row, getattr(self, "title_anim_step", 0) / 100.0)
 
     def _mark_result_missing(self, row: int, reason: Optional[str] = None):
-        # Give one last chance in case the JSON appeared after the retries elapsed.
         if self.update_result_cell(row):
             return
 
@@ -1477,18 +1903,17 @@ class CANLogDebugger(QWidget):
         success = False
         if result_str == "PASS":
             self._set_colored_cell(
-                row, 4, "PASS", "#28A745", align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip
+                row, 4, "PASS", self.theme.get("pass_bg"), align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip
             )
             success = True
         elif result_str == "FAIL":
             self._set_colored_cell(
-                row, 4, "FAIL", "#FF0000", align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip
+                row, 4, "FAIL", self.theme.get("fail_bg"), align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip
             )
             success = True
         elif result_str == "WARNING":
-            # Show WARNING as an in-between state (amber color)
             self._set_colored_cell(
-                row, 4, "WARNING", "#FFA500", align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip
+                row, 4, "WARNING", self.theme.get("warning_bg"), align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip
             )
             success = True
 
@@ -1496,7 +1921,7 @@ class CANLogDebugger(QWidget):
             status_item = self.test_table.item(row, 1)
             current_status = (status_item.text() if status_item else "").strip().lower()
             if current_status != "completed":
-                self._set_colored_cell(row, 1, "Completed", "#28A745")
+                self._set_colored_cell(row, 1, "Completed", self.theme.get("completed_bg"))
 
             if row in self.pending_result_rows:
                 self.pending_result_rows.discard(row)
@@ -1507,7 +1932,6 @@ class CANLogDebugger(QWidget):
     def _schedule_result_update(
         self, row: int, attempts: int = RESULT_POLL_ATTEMPTS, delay_ms: int = RESULT_POLL_DELAY_MS
     ):
-        """Retry updating result after giving scripts time to write output."""
         if attempts <= 0:
             self._mark_result_missing(row)
             return
@@ -1528,7 +1952,6 @@ class CANLogDebugger(QWidget):
     # VIEW RESULT / GRAPH
     # ======================================================
     def on_view_results(self, idx):
-        # Refresh PASS/FAIL manually whenever the user opens the viewer.
         self.update_result_cell(idx)
 
         summary_path = self._get_output_file_path(idx, "summary")
@@ -1547,7 +1970,6 @@ class CANLogDebugger(QWidget):
             QMessageBox.information(self, "Info", f"File not found:\n{graph_path}")
             return
 
-        # Prefer Microsoft Office Picture Manager if installed; fallback to default handler
         candidate_viewers = [
             r"C:\Program Files (x86)\Microsoft Office\Office12\OIS.EXE",
             r"C:\Program Files\Microsoft Office\Office12\OIS.EXE",
@@ -1561,47 +1983,9 @@ class CANLogDebugger(QWidget):
                     pass
 
         try:
-            os.startfile(graph_path)  # type: ignore[attr-defined]
+            os.startfile(graph_path)
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to open graph:\n{e}")
-
-    # ======================================================
-    # RESET CHECKERS
-    # ======================================================
-    def _count_keyword(self, keywords):
-        if not self.selected_file_path:
-            QMessageBox.warning(self, "Error", "No file loaded!")
-            return 0
-
-        total = 0
-        try:
-            with open(self.selected_file_path, "r", errors="ignore") as f:
-                for line in f:
-                    l = line.lower()
-                    for k in keywords:
-                        if k in l:
-                            total += 1
-                            break
-        except Exception:
-            pass
-        return total
-
-    def check_vcu(self):
-        if not self.selected_file_path:
-            QMessageBox.warning(self, "Error", "No file loaded!")
-            return
-        file_ext = os.path.splitext(self.selected_file_path)[1].lower()
-        if file_ext != ".trc":
-            QMessageBox.warning(self, "Error", "VCU reset check only runs on .trc files.")
-            self.reset_vcu_fields()
-            return
-        self._start_vcu_reset_check(self.selected_file_path, track_scan=False)
-
-    def check_bms(self):
-        self._run_bms_reset_check(manual=True)
-
-    def _run_bms_reset_check(self, manual: bool = False):
-        self._start_bms_reset_check(self.selected_file_path, track_scan=False, manual=manual)
 
     # ======================================================
     # GENERATE TRACKER
@@ -1744,6 +2128,7 @@ class CANLogDebugger(QWidget):
             except Exception as e:
                 QMessageBox.warning(self, "Excel Tracker", f"Failed to open file:\n{e}")
 
+
 def send_heartbeat():
     try:
         requests.post(
@@ -1758,6 +2143,7 @@ def send_heartbeat():
     except:
         pass
 
+
 def check_kill_switch():
     url = "https://raw.githubusercontent.com/itssatishkumar/Runner/main/runner.txt"
     try:
@@ -1766,6 +2152,7 @@ def check_kill_switch():
             return value == "TRUE"
     except Exception:
         return False
+
 
 # -------------------------------------------------------
 # MAIN
@@ -1781,6 +2168,7 @@ def run_updater_first(app: QApplication):
         local_version = "1.0.0"
 
     check_for_update(local_version=local_version, app=app)
+
 
 def main():
     if check_kill_switch():
@@ -1798,6 +2186,7 @@ def main():
     w = CANLogDebugger()
     w.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
