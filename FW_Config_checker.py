@@ -142,9 +142,9 @@ def parse_firmware_versions(trc_path):
         "STARK_FIRMWARE": ", ".join(stark_fw),
         "STARK_CONFIG": ", ".join(stark_cfg),
         "XAVIER_FIRMWARE": ", ".join(xavier_fw),
-        "DIST_INITIAL_KM": initial_distance,
-        "DIST_FINAL_KM": final_distance,
-        "DISTANCE_COVERED_KM": distance_covered,
+        "Start_Odo_KM": round(initial_distance, 1) if initial_distance is not None else None,
+        "End_Odo_KM": round(final_distance, 1) if final_distance is not None else None,
+        "DISTANCE_COVERED_KM": round(distance_covered, 1) if distance_covered is not None else None,
         "_DRIVE_MODES_RAW": drive_modes
     }
 
