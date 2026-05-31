@@ -935,11 +935,11 @@ class CANLogDebugger(QWidget):
             result_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             table.setItem(i, 4, result_item)
 
-            btn_r = QPushButton("View")
+            btn_r = QPushButton("👁 View")
             btn_r.clicked.connect(lambda _, r=i: self.on_view_results(r))
             table.setCellWidget(i, 2, btn_r)
 
-            btn_g = QPushButton("Graph")
+            btn_g = QPushButton("📊 Graph")
             btn_g.clicked.connect(lambda _, r=i: self.on_view_graph(r))
             table.setCellWidget(i, 3, btn_g)
             
