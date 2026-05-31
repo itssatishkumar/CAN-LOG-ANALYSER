@@ -759,31 +759,18 @@ def test_peak_regen_current():
     capture = []
     start = False
 
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
-            if line.startswith("Peak Regen Current and Duration"):
+            line = line.strip()
+
+            if line.startswith("Peak Positive current"):
                 start = True
-                capture.append(line.strip())
-                continue
 
             if start:
-                if line.strip() == "":
-                    break
+                if line:  # Ignore blank lines
+                    capture.append(line)
 
-                line_clean = line.strip()
-                if '"Duration": "00:00:' in line_clean:
-                    seconds = line_clean.split('"Duration": "00:00:')[1].split('"')[0]
-                    line_clean = line_clean.replace(
-                        f'"Duration": "00:00:{seconds}"',
-                        f'"Duration": "{int(seconds)}s"'
-                    )
-
-                capture.append(line_clean)
-
-    if capture:
-        return "\n".join(capture)
-
-    return None
+    return "\n".join(capture) if capture else None
 
 # =====================================================
 # 🔥 TEST CASE 39 : PCB Temperature Range
