@@ -526,24 +526,27 @@ def main():
         end_t = pos_samples[j - 1][0]
         duration = (end_t - start_t).total_seconds()
 
+        peak_current = max(p[1] for p in pos_samples[i:j])
         regen_events.append({
             "duration_sec": duration,
-            "avg_current": sum_i / count if count else 0,
+            "peak_current": peak_current,
+            "count": count,
             "soc_start": last_soc,
             "dcli": last_dcli
-    })
+        })
 
         i = j
 
-    regen_sorted = sorted(regen_events, key=lambda x: x["avg_current"], reverse=True)[:3]
+    regen_sorted = sorted(regen_events, key=lambda x: x["peak_current"], reverse=True)[:3]
 
-    txt_lines.append("\n\nPeak Regen Current and Duration")
+    txt_lines.append(f"\nPeak Positive current : {max_positive:.0f}A")
+    txt_lines.append("\nPeak Regen Current and Duration")
 
-    for idx, inst in enumerate(regen_sorted, start=1):
+    for inst in regen_sorted:
         txt_lines.append(
-            f'"Instance": {idx}, "Duration": "{format_duration(inst["duration_sec"])}",'
+            f'"Count": {inst["count"]}, '
             f'"DCLI": "{(f"{inst["dcli"]:.0f}") if inst["dcli"] is not None else ""}",'
-            f'"PackCurrent": "{inst["avg_current"]:.0f}A",'
+            f'"PackCurrent": "{inst["peak_current"]:.0f}A",'
             f'"SoC": "{(f"{inst["soc_start"]:.2f}%") if inst["soc_start"] is not None else ""}"'
     )
     txt_content = "\n".join(txt_lines)
