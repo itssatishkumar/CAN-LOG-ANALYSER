@@ -256,10 +256,24 @@ def test_vehicle_range():
     if not os.path.exists(path):
         return None
 
-    with open(path) as f:
+    start_km = None
+    end_km = None
+    distance = None
+
+    with open(path, "r", encoding="utf-8") as f:
         for line in f:
-            if line.startswith("DISTANCE_COVERED_KM"):
-                return line.split(":")[1].strip()
+            if line.startswith("Start_Odo_KM"):
+                start_km = line.split(":", 1)[1].strip()
+
+            elif line.startswith("End_Odo_KM"):
+                end_km = line.split(":", 1)[1].strip()
+
+            elif line.startswith("DISTANCE_COVERED_KM"):
+                distance = line.split(":", 1)[1].strip()
+
+    if distance and start_km and end_km:
+        return f"{distance} KM\nOdo: {start_km} → {end_km}"
+
     return None
 
 # =====================================================
