@@ -51,7 +51,10 @@ BMS_CAN_ID = 0x0109
 SOC_SF = 0.01                     # SoC bytes 0-1 Intel, sf 0.01
 BMS_STATE_BYTE = 4                # byte 4
 
-AUXV_CAN_ID = 0x0606
+AUXV_CAN_ID_606 = 0x0606
+AUXV_CAN_ID_408 = 0x0408
+selected_aux_id = None
+
 AUXV_SF = 0.01                    # AuxVoltage (0.01,0)
 AUXV_MSB_IDX = 1                  # AuxVoltage MSB at byte 1 (bytes 1-2 big-endian)
 MIN_VALID_AUX = 1.0               # ignore Aux readings below this unless BMS state is 3
@@ -98,7 +101,7 @@ def parse_trc_line(line: str):
     return ts, canid, dlc, data[:dlc]
 
 
-def decode_0606_auxv(data: list[int]) -> float:
+def decode_auxv(data: list[int]) -> float:
     # bytes 1..2 big-endian, scaled 0.01
     raw = (data[AUXV_MSB_IDX] << 8) | data[AUXV_MSB_IDX + 1]
     return raw * AUXV_SF
@@ -148,6 +151,7 @@ def get_trc_path_from_gui_or_browse() -> str:
 # =====================================================
 def process_trc(
     trc_path: str,
+    selected_aux_id: int,
     plot_sample_every: int = PLOT_SAMPLE_EVERY,
     progress_cb: Optional[Callable[[int], None]] = None,
 ):
@@ -179,8 +183,12 @@ def process_trc(
             if progress_cb:
                 progress_cb(len(line))
 
-            if canid == AUXV_CAN_ID and dlc >= AUXV_MSB_IDX + 2:
-                aux_v = decode_0606_auxv(data)
+            if (
+                selected_aux_id is not None
+                and canid == selected_aux_id
+                and dlc >= AUXV_MSB_IDX + 2
+            ):
+                aux_v = decode_auxv(data)
                 # discard Aux <1V unless current BMS state is known to be 3
                 is_valid_aux = (aux_v >= MIN_VALID_AUX) or (prev_bms_state == 3)
                 if not is_valid_aux:
@@ -366,10 +374,36 @@ def main():
     print(f"Using TRC file: {trc_path}")
     print(f"Outputs will be saved next to script: {SCRIPT_DIR}")
 
+    # Step 8: Detect which Aux ID appears first
+    selected_aux_id = None
+    
+    with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            p = parse_trc_line(line)
+            if not p:
+                continue
+            
+            _, canid, _, _ = p
+            
+            if canid == AUXV_CAN_ID_606:
+                selected_aux_id = AUXV_CAN_ID_606
+                print(f"Detected Aux CAN ID: 0x0606")
+                break
+            
+            if canid == AUXV_CAN_ID_408:
+                selected_aux_id = AUXV_CAN_ID_408
+                print(f"Detected Aux CAN ID: 0x0408")
+                break
+    
+    if selected_aux_id is None:
+        print("ERROR: No Aux voltage CAN ID (0x0606 or 0x0408) found in TRC file")
+        sys.exit(1)
+
     progress_cb = progress_by_bytes(trc_path, step=PROGRESS_STEP)
 
     (min_between, ts_between), (min_all, ts_all), plot_rows, _ = process_trc(
         trc_path,
+        selected_aux_id,
         PLOT_SAMPLE_EVERY,
         progress_cb=progress_cb,
     )
@@ -393,8 +427,8 @@ def main():
 
                     _, canid, dlc, data = p_line
 
-                    if canid == AUXV_CAN_ID and dlc >= AUXV_MSB_IDX + 2:
-                        v = decode_0606_auxv(data)
+                    if canid == selected_aux_id and dlc >= AUXV_MSB_IDX + 2:
+                        v = decode_auxv(data)
 
                         if v > aux_max:
                             aux_max = v
@@ -416,8 +450,8 @@ def main():
 
                         _, canid, dlc, data = p_line
 
-                        if canid == AUXV_CAN_ID and dlc >= AUXV_MSB_IDX + 2:
-                            v = decode_0606_auxv(data)
+                        if canid == selected_aux_id and dlc >= AUXV_MSB_IDX + 2:
+                            v = decode_auxv(data)
 
                             if v > 0 and round(v, 2) == round(min_all, 2):
                                 count += 1
