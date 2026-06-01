@@ -131,7 +131,8 @@ def parse_firmware_versions(trc_path):
                     if len(p) >= 4 and p[0].upper() == "02":
                         add_unique(bms_manifest, f"{int(p[1],16):02X}.{int(p[2],16):02X}.{int(p[3],16):02X}")
 
-    distance_covered = round(final_distance - initial_distance, 1) if initial_distance and final_distance else None
+    # FIX 1: Changed from "if initial_distance and final_distance" to "if initial_distance is not None and final_distance is not None"
+    distance_covered = round(final_distance - initial_distance, 1) if initial_distance is not None and final_distance is not None else None
 
     return {
         "BMS_HW": ", ".join(bms_hw),
@@ -144,7 +145,7 @@ def parse_firmware_versions(trc_path):
         "XAVIER_FIRMWARE": ", ".join(xavier_fw),
         "Start_Odo_KM": round(initial_distance, 1) if initial_distance is not None else None,
         "End_Odo_KM": round(final_distance, 1) if final_distance is not None else None,
-        "DISTANCE_COVERED_KM": round(distance_covered, 1) if distance_covered is not None else None,
+        "DISTANCE_COVERED_KM": distance_covered,  # FIX 2: Removed extra round() since it's already rounded above
         "_DRIVE_MODES_RAW": drive_modes
     }
 
