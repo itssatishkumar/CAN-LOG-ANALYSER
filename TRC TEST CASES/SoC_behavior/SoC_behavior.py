@@ -227,14 +227,24 @@ def detect_soc_stuck_odo(df, odo_events, min_km=4.0, max_soc_delta=1.0, max_odo_
 
     odo_sorted = sorted(odo_events, key=lambda x: x[0])
     n = len(odo_sorted)
+    odo_ts = np.array([event[0] for event in odo_sorted])
+    large_gap_prefix = np.concatenate((
+        [0],
+        np.cumsum(np.diff(odo_ts) > max_odo_gap_ms),
+    ))
+
+    df_ts = df["ts"].values
+    df_soc = df["SoC"].values
+    df_full_ts = df["full_ts"].values
+    df_ts_sorted = np.all(df_ts[:-1] <= df_ts[1:])
 
     # Identify SoC indices to ignore (first valid after BMS=0)
     bms_full = df["BMS"].values
-    ts_full = df["ts"].values
     ignore_ts = set()
     for i in range(1, len(bms_full)):
         if bms_full[i-1] == 0 and bms_full[i] != 0:
-            ignore_ts.add(ts_full[i])
+            ignore_ts.add(df_ts[i])
+    ignore_mask = np.isin(df_ts, list(ignore_ts)) if ignore_ts else np.zeros(len(df_ts), dtype=bool)
 
     j = 0
     for i in range(n):
@@ -250,30 +260,31 @@ def detect_soc_stuck_odo(df, odo_events, min_km=4.0, max_soc_delta=1.0, max_odo_
 
         t_end, odo_end = odo_sorted[j]
 
-        has_large_gap = False
-        for k in range(i, j):
-            if (odo_sorted[k + 1][0] - odo_sorted[k][0]) > max_odo_gap_ms:
-                has_large_gap = True
-                break
-        if has_large_gap:
+        if large_gap_prefix[j] - large_gap_prefix[i]:
             continue
 
-
-        seg = df[(df["ts"] >= t_start) & (df["ts"] <= t_end)]
         # Remove ignored SoC samples
-        seg = seg[~seg["ts"].isin(ignore_ts)]
-        if seg.empty:
+        if df_ts_sorted:
+            left = np.searchsorted(df_ts, t_start, side="left")
+            right = np.searchsorted(df_ts, t_end, side="right")
+            seg_indices = np.flatnonzero(~ignore_mask[left:right]) + left
+        else:
+            seg_indices = np.flatnonzero(
+                (df_ts >= t_start) & (df_ts <= t_end) & ~ignore_mask
+            )
+        if not len(seg_indices):
             continue
 
         # Only judge if all SoC in segment are >= 1%
-        if (seg["SoC"] < 1.0).any():
+        seg_soc = df_soc[seg_indices]
+        if np.any(seg_soc < 1.0):
             continue
 
-        soc_start = seg["SoC"].iloc[0]
-        soc_range = float(seg["SoC"].max() - seg["SoC"].min())
+        soc_start = seg_soc[0]
+        soc_range = float(np.max(seg_soc) - np.min(seg_soc))
 
         if soc_range <= max_soc_delta:
-            first_ts_full = seg["full_ts"].iloc[0]
+            first_ts_full = df_full_ts[seg_indices[0]]
             return True, round(soc_start, 2), first_ts_full
 
     return False, None, None
@@ -412,6 +423,14 @@ ts_plot = df_valid["ts"].values[valid_plot_indices]
 soc_plot = df_valid["SoC"].values[valid_plot_indices]
 plt.plot(ts_plot, soc_plot, linewidth=2, label="SoC (Delta Computed)")
 plt.scatter(df_valid.loc[idx, "ts"], df_valid.loc[idx, "SoC"], s=90, c="red", zorder=5, label="Max SoC Jump")
+plt.annotate(
+    f"Delta: {delta:.2f}% ({prev_soc:.2f}% to {curr_soc:.2f}%)",
+    (df_valid.loc[idx, "ts"], df_valid.loc[idx, "SoC"]),
+    xytext=(10, 10),
+    textcoords="offset points",
+    fontsize=9,
+    color="red",
+)
 
 plt.title("SoC vs Time (Delta Computed Only)")
 plt.xlabel("Time")
