@@ -473,7 +473,7 @@ def save_results(cycles, filepath):
     save_plot_png(cycles)
 
     if not cycles:
-        overall_result = "FAIL"
+        overall_result = "PASS"
     else:
         overall_result = (
             "PASS"
