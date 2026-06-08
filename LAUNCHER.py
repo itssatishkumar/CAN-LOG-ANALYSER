@@ -6,20 +6,222 @@ import csv
 import math
 import time
 import re
+import ast
 import urllib.request
 import requests
 import socket
-from typing import Dict, Optional, Set
+import threading
+import shutil
+import pyautogui
+import pygetwindow as gw
+from typing import Dict, Optional, Set, List
+from pathlib import Path
+from datetime import datetime
 
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QComboBox,
     QFileDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QMessageBox,
     QGridLayout, QTableWidget, QTableWidgetItem, QFrame, QDialog,
-    QTextEdit, QHeaderView, QAbstractItemView, QColorDialog, QScrollArea
+    QTextEdit, QHeaderView, QAbstractItemView, QColorDialog, QScrollArea,
+    QProgressBar, QGroupBox, QListWidget, QListWidgetItem
 )
 from PySide6.QtGui import QFont, QPixmap, QColor, QLinearGradient, QBrush, QPalette
-from PySide6.QtCore import Qt, QThread, Signal, QProcess, QTimer, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QThread, Signal, QProcess, QTimer, QPropertyAnimation, QEasingCurve, Slot, QMetaObject, Q_ARG
+
 from updater import check_for_update
+# Inlined KeyboardAutomation to remove external dependency (keeps LAUNCHER self-contained)
+pyautogui.FAILSAFE = False
+pyautogui.PAUSE = 0.05  # 50ms between key presses
+
+
+class KeyboardAutomation:
+    """Real keyboard-based automation for CAN Log Analyzer (inlined)
+    This replaces the external `keyboard_automation.py` to avoid missing-import
+    diagnostics and keep all automation inside `LAUNCHER.py`.
+    """
+    def __init__(self, window_title: str = "CAN LOG ANALYSER", verbose: bool = True):
+        self.window_title = window_title
+        self.verbose = verbose
+        self.window = None
+        self.find_window()
+
+    def log(self, message: str):
+        if self.verbose:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            print(f"[{timestamp}] {message}")
+
+    def find_window(self) -> bool:
+        try:
+            windows = gw.getWindowsWithTitle(self.window_title)
+            if not windows:
+                self.log(f"❌ Window '{self.window_title}' not found!")
+                return False
+            self.window = windows[0]
+            self.log(f"✅ Found window: {self.window.title}")
+            self.window.activate()
+            time.sleep(0.3)
+            self.log(f"✅ Window brought to foreground")
+            return True
+        except Exception as e:
+            self.log(f"❌ Error finding window: {e}")
+            return False
+
+    def ensure_window_focused(self) -> bool:
+        if not self.window:
+            return self.find_window()
+        try:
+            if self.window.isMinimized:
+                self.window.maximize()
+            self.window.activate()
+            time.sleep(0.2)
+            return True
+        except Exception as e:
+            self.log(f"❌ Error focusing window: {e}")
+            return False
+
+    def press_key(self, key: str, presses: int = 1, interval: float = 0.1) -> bool:
+        try:
+            for _ in range(presses):
+                pyautogui.press(key)
+                time.sleep(interval)
+            self.log(f"⌨️ Pressed: {key}")
+            return True
+        except Exception as e:
+            self.log(f"❌ Error pressing key: {e}")
+            return False
+
+    def type_text(self, text: str, interval: float = 0.05) -> bool:
+        try:
+            pyautogui.typewrite(text, interval=interval)
+            self.log(f"⌨️ Typed: {text}")
+            return True
+        except Exception as e:
+            self.log(f"❌ Error typing text: {e}")
+            return False
+
+    def hotkey(self, *keys) -> bool:
+        try:
+            pyautogui.hotkey(*keys)
+            key_combo = '+'.join(keys)
+            self.log(f"⌨️ Hotkey: {key_combo}")
+            time.sleep(0.2)
+            return True
+        except Exception as e:
+            self.log(f"❌ Error with hotkey: {e}")
+            return False
+
+    def click_make_organised(self) -> bool:
+        self.log(f"\n{'='*60}")
+        self.log(f"🎯 Activating: 'MAKE YOUR LOGS ORGANISED'")
+        self.log(f"{'='*60}")
+        if not self.ensure_window_focused():
+            return False
+        time.sleep(0.3)
+        if self.hotkey('alt', 'm'):
+            self.log(f"✅ Button activated via Alt+M shortcut")
+            time.sleep(1.0)
+            return True
+        return False
+
+    def click_browse_file(self) -> bool:
+        self.log(f"\n{'='*60}")
+        self.log(f"🎯 Activating: 'Browse File'")
+        self.log(f"{'='*60}")
+        if not self.ensure_window_focused():
+            return False
+        time.sleep(0.3)
+        if self.hotkey('alt', 'b'):
+            self.log(f"✅ Button activated via Alt+B shortcut")
+            time.sleep(1.5)
+            return True
+        return False
+
+    def click_run_all_tests(self) -> bool:
+        self.log(f"\n{'='*60}")
+        self.log(f"🎯 Activating: 'RUN ALL TEST CASES'")
+        self.log(f"{'='*60}")
+        if not self.ensure_window_focused():
+            return False
+        time.sleep(0.3)
+        if self.hotkey('alt', 'r'):
+            self.log(f"✅ Button activated via Alt+R shortcut")
+            time.sleep(1.0)
+            return True
+        return False
+
+    def click_create_excel_tracker(self) -> bool:
+        self.log(f"\n{'='*60}")
+        self.log(f"🎯 Activating: 'CREATE EXCEL TRACKER'")
+        self.log(f"{'='*60}")
+        if not self.ensure_window_focused():
+            return False
+        time.sleep(0.3)
+        if self.hotkey('alt', 'c'):
+            self.log(f"✅ Button activated via Alt+C shortcut")
+            time.sleep(1.5)
+            return True
+        return False
+
+    def select_file_in_dialog(self, file_path: str) -> bool:
+        self.log(f"\n{'='*60}")
+        self.log(f"📂 Selecting file in dialog")
+        self.log(f"{'='*60}")
+        try:
+            time.sleep(0.5)
+            self.log(f"⌨️ Clearing filename field...")
+            self.hotkey('ctrl', 'a')
+            time.sleep(0.1)
+            self.log(f"⌨️ Typing file path: {file_path}")
+            pyautogui.typewrite(file_path, interval=0.01)
+            time.sleep(0.3)
+            self.log(f"⌨️ Pressing Enter to confirm...")
+            self.press_key('return')
+            time.sleep(0.5)
+            self.log(f"✅ File selected: {file_path}")
+            return True
+        except Exception as e:
+            self.log(f"❌ Error selecting file: {e}")
+            return False
+
+    def handle_dialog_no(self) -> bool:
+        self.log(f"\n{'='*60}")
+        self.log(f"🎯 Clicking NO in dialog")
+        self.log(f"{'='*60}")
+        try:
+            time.sleep(0.3)
+            if self.hotkey('alt', 'n'):
+                self.log(f"✅ NO button activated via Alt+N shortcut")
+                time.sleep(0.5)
+                return True
+            self.log(f"⌨️ Using Tab to navigate to NO button...")
+            self.press_key('tab')
+            time.sleep(0.2)
+            self.press_key('space')
+            time.sleep(0.5)
+            self.log(f"✅ NO button activated")
+            return True
+        except Exception as e:
+            self.log(f"❌ Error clicking NO: {e}")
+            return False
+
+    def navigate_and_activate_button(self, button_index: int = 0) -> bool:
+        self.log(f"\n{'='*60}")
+        self.log(f"🎯 Navigating to button {button_index}")
+        self.log(f"{'='*60}")
+        if not self.ensure_window_focused():
+            return False
+        try:
+            for i in range(button_index):
+                self.press_key('tab', interval=0.15)
+            time.sleep(0.2)
+            self.log(f"⌨️ Pressing Space to activate button...")
+            self.press_key('space')
+            time.sleep(0.5)
+            self.log(f"✅ Button activated via Tab navigation")
+            return True
+        except Exception as e:
+            self.log(f"❌ Error navigating: {e}")
+            return False
 from PySide6.QtCore import qInstallMessageHandler
 
 def silence_qt_warnings(msg_type, context, message):
@@ -40,6 +242,9 @@ TEST_CASES = [
 
 FW_CHECKER = "FW_Config_checker.py"
 CLEAR_OUTPUTS_ON_RUN_ALL = True
+AUTOMATE_BUTTON_ENABLED = False
+EXCEL_SEQUENCE_POINTER_FILE = "excel_tracker_sequence_path.txt"
+DEFAULT_EXCEL_SEQUENCE_FILE = "excel_tracker_sequence.txt"
 
 SCRIPT_BY_ROW: Dict[int, str] = {
     0: "SoC_behavior.py",
@@ -67,11 +272,469 @@ RESULT_POLL_DELAY_MS = 500
 
 
 # -------------------------------------------------------
+# MULTI-SOURCE AUTOMATION WORKER (Google Drive + Local Folders)
+# -------------------------------------------------------
+class MultiSourceAutomationWorker(QThread):
+    log_signal = Signal(str)
+    status_signal = Signal(str)
+    progress_signal = Signal(int)
+    finished_signal = Signal(bool, str)
+    
+    def __init__(self, sources: List[str], parent=None):
+        super().__init__(parent)
+        self.sources = sources  # List of URLs or local paths
+        self.parent_gui = parent
+        self.script_dir = os.path.dirname(os.path.realpath(__file__))
+        self.temp_folder = os.path.join(self.script_dir, "temp_automation")
+        self.all_downloaded_files = []
+        self.source_count = len(sources)
+        
+    def _extract_folder_id(self, url: str) -> str:
+        import re
+        patterns = [
+            r'/folders/([a-zA-Z0-9_-]+)',
+            r'id=([a-zA-Z0-9_-]+)',
+            r'drive.google.com/open\?id=([a-zA-Z0-9_-]+)'
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        return url
+    
+    def _is_google_drive_link(self, source: str) -> bool:
+        return "drive.google.com" in source.lower() or "google.com" in source.lower()
+    
+    def _download_from_drive(self, drive_link: str) -> List[str]:
+        """Download TRC files from Google Drive"""
+        import gdown
+        
+        folder_id = self._extract_folder_id(drive_link)
+        folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
+        self.log_signal.emit(f"📁 Google Drive Folder ID: {folder_id}")
+        
+        # Create temp folder
+        os.makedirs(self.temp_folder, exist_ok=True)
+        
+        self.log_signal.emit("⬇️ Downloading TRC files from Google Drive...")
+        
+        try:
+            gdown.download_folder(url=folder_url, output=self.temp_folder, use_cookies=False)
+        except Exception as e:
+            self.log_signal.emit(f"⚠️ Error downloading: {str(e)}")
+            return []
+        
+        # Find all downloaded .trc files
+        downloaded_files = []
+        for root, dirs, files in os.walk(self.temp_folder):
+            for file in files:
+                if file.lower().endswith('.trc'):
+                    downloaded_files.append(os.path.join(root, file))
+        
+        return downloaded_files
+    
+    def _copy_from_local_folder(self, local_path: str) -> List[str]:
+        """Copy TRC files from local folder"""
+        self.log_signal.emit(f"📂 Scanning local folder: {local_path}")
+        
+        if not os.path.isdir(local_path):
+            self.log_signal.emit(f"❌ Folder not found: {local_path}")
+            return []
+        
+        # Create temp folder
+        os.makedirs(self.temp_folder, exist_ok=True)
+        
+        copied_files = []
+        for root, dirs, files in os.walk(local_path):
+            for file in files:
+                if file.lower().endswith('.trc'):
+                    src_path = os.path.join(root, file)
+                    dst_path = os.path.join(self.temp_folder, file)
+                    
+                    # If file exists, add counter to avoid overwrite
+                    counter = 1
+                    base_name, ext = os.path.splitext(file)
+                    while os.path.exists(dst_path):
+                        dst_path = os.path.join(self.temp_folder, f"{base_name}_{counter}{ext}")
+                        counter += 1
+                    
+                    try:
+                        shutil.copy2(src_path, dst_path)
+                        copied_files.append(dst_path)
+                        self.log_signal.emit(f"  ✓ Copied: {os.path.basename(dst_path)}")
+                    except Exception as e:
+                        self.log_signal.emit(f"  ✗ Failed to copy {file}: {str(e)}")
+        
+        return copied_files
+    
+    def run(self):
+        try:
+            self.log_signal.emit("🚀 Starting Multi-Source Automation")
+            self.log_signal.emit(f"📊 Processing {self.source_count} source(s)...")
+            
+            # Clear temp folder at start
+            if os.path.exists(self.temp_folder):
+                shutil.rmtree(self.temp_folder)
+            os.makedirs(self.temp_folder, exist_ok=True)
+            
+            # Process each source
+            for idx, source in enumerate(self.sources):
+                self.log_signal.emit(f"\n📌 Processing source {idx+1}/{self.source_count}...")
+                
+                if self._is_google_drive_link(source):
+                    files = self._download_from_drive(source)
+                else:
+                    files = self._copy_from_local_folder(source)
+                
+                self.all_downloaded_files.extend(files)
+                self.log_signal.emit(f"✅ Found {len(files)} TRC file(s)")
+            
+            if not self.all_downloaded_files:
+                self.log_signal.emit("❌ No TRC files found in any source")
+                self.finished_signal.emit(False, "No TRC files found")
+                return
+            
+            self.log_signal.emit(f"📊 Total: {len(self.all_downloaded_files)} TRC file(s) collected")
+            for f in self.all_downloaded_files:
+                size = os.path.getsize(f) / 1024 / 1024
+                self.log_signal.emit(f"  📄 {os.path.basename(f)} ({size:.1f} MB)")
+            
+            self.progress_signal.emit(20)
+            
+            # Step 2: Click MAKE YOUR LOGS ORGANISED (KEYBOARD SHORTCUT)
+            self.log_signal.emit("\n📂 Activating 'MAKE YOUR LOGS ORGANISED' (Alt+M)...")
+            self.status_signal.emit("Organising logs...")
+            automation = KeyboardAutomation(window_title="CAN LOG ANALYSER", verbose=True)
+            # Notify UI to highlight the Make button
+            self.status_signal.emit("UI:make_btn:start")
+            if automation.click_make_organised():
+                self.log_signal.emit("✅ Button activated via keyboard shortcut")
+                self.status_signal.emit("UI:make_btn:done")
+            else:
+                self.log_signal.emit("⚠️ Could not click button")
+                self.status_signal.emit("UI:make_btn:failed")
+            
+            # Wait for logs_organised to complete
+            self.log_signal.emit("⏳ Waiting for logs organisation...")
+            timeout = 120
+            elapsed = 0
+            while elapsed < timeout:
+                if hasattr(self.parent_gui, 'logs_organised_complete') and self.parent_gui.logs_organised_complete:
+                    break
+                time.sleep(1)
+                elapsed += 1
+            
+            if elapsed >= timeout:
+                self.log_signal.emit("⚠️ Timeout waiting for logs organisation")
+            else:
+                self.log_signal.emit("✅ Logs organised successfully")
+            
+            self.progress_signal.emit(40)
+            
+            # Step 3: Find the organised TRC file
+            organised_trc = None
+            if hasattr(self.parent_gui, 'logs_last_output_path') and self.parent_gui.logs_last_output_path:
+                organised_trc = self.parent_gui.logs_last_output_path
+                if os.path.exists(organised_trc):
+                    self.log_signal.emit(f"📄 Organised file: {os.path.basename(organised_trc)}")
+                    # Save the FINAL filename
+                    self._save_final_filename(organised_trc)
+            
+            if not organised_trc or not os.path.exists(organised_trc):
+                # Use the first downloaded TRC file
+                if self.all_downloaded_files:
+                    organised_trc = self.all_downloaded_files[0]
+                    self.log_signal.emit(f"📄 Using file: {os.path.basename(organised_trc)}")
+                    self._save_final_filename(organised_trc)
+            
+            if not organised_trc or not os.path.exists(organised_trc):
+                self.log_signal.emit("❌ Could not find TRC file")
+                self.finished_signal.emit(False, "TRC file not found")
+                return
+            
+            # Step 4: Click Browse and select file (KEYBOARD SHORTCUT)
+            self.log_signal.emit("🖱️ Activating file browser (Alt+B)...")
+            automation = KeyboardAutomation(window_title="CAN LOG ANALYSER", verbose=True)
+            self.status_signal.emit("UI:browse_btn:start")
+            if automation.click_browse_file():
+                self.log_signal.emit("✅ Browse button activated")
+                self.status_signal.emit("UI:browse_btn:done")
+                # Handle file selection in dialog
+                self.status_signal.emit("UI:dialog_select:start")
+                if automation.select_file_in_dialog(organised_trc):
+                    self.log_signal.emit(f"✅ File selected: {os.path.basename(organised_trc)}")
+                    self.status_signal.emit("UI:dialog_select:done")
+                else:
+                    self.log_signal.emit("⚠️ Could not select file in dialog")
+                    self.status_signal.emit("UI:dialog_select:failed")
+            else:
+                self.log_signal.emit("⚠️ Could not activate Browse button")
+                self.status_signal.emit("UI:browse_btn:failed")
+            
+            time.sleep(3)
+            self.progress_signal.emit(50)
+            
+            # Step 5: Click RUN ALL TEST CASES (KEYBOARD SHORTCUT)
+            self.log_signal.emit("\n▶️ Activating 'RUN ALL TEST CASES' (Alt+R)...")
+            self.status_signal.emit("Running test cases...")
+            automation = KeyboardAutomation(window_title="CAN LOG ANALYSER", verbose=True)
+            self.status_signal.emit("UI:run_all_btn:start")
+            if automation.click_run_all_tests():
+                self.log_signal.emit("✅ Run All Tests activated via keyboard")
+                self.status_signal.emit("UI:run_all_btn:done")
+            else:
+                self.log_signal.emit("⚠️ Could not click Run All Tests button")
+                self.status_signal.emit("UI:run_all_btn:failed")
+            
+            # Wait for tests to complete
+            self.log_signal.emit("⏳ Waiting for tests to complete (this may take a while)...")
+            timeout = 1800
+            elapsed = 0
+            while elapsed < timeout:
+                if hasattr(self.parent_gui, 'tests_complete') and self.parent_gui.tests_complete:
+                    break
+                time.sleep(2)
+                elapsed += 2
+                self.progress_signal.emit(50 + int(elapsed / timeout * 35))
+            
+            if elapsed >= timeout:
+                self.log_signal.emit("⚠️ Timeout waiting for tests")
+            else:
+                self.log_signal.emit("✅ All tests completed")
+            
+            self.progress_signal.emit(85)
+            
+            # Step 6: Click CREATE EXCEL TRACKER (KEYBOARD SHORTCUT)
+            self.log_signal.emit("\n📊 Activating 'CREATE EXCEL TRACKER' (Alt+C)...")
+            self.status_signal.emit("Generating Excel tracker...")
+            automation = KeyboardAutomation(window_title="CAN LOG ANALYSER", verbose=True)
+            self.status_signal.emit("UI:gen_excel_btn:start")
+            if automation.click_create_excel_tracker():
+                self.log_signal.emit("✅ Create Tracker activated via keyboard")
+                self.status_signal.emit("UI:gen_excel_btn:done")
+            else:
+                self.log_signal.emit("⚠️ Could not click Create Tracker button")
+                self.status_signal.emit("UI:gen_excel_btn:failed")
+            
+            time.sleep(5)
+            
+            # Step 7: Handle the popup (click NO via Alt+N)
+            self.log_signal.emit("✋ Handling Excel popup (Alt+N)...")
+            automation = KeyboardAutomation(window_title="CAN LOG ANALYSER", verbose=True)
+            self.status_signal.emit("UI:dialog_no:start")
+            if automation.handle_dialog_no():
+                self.log_signal.emit("✅ NO button activated via keyboard")
+                self.status_signal.emit("UI:dialog_no:done")
+            else:
+                self.log_signal.emit("⚠️ Could not click NO button")
+                self.status_signal.emit("UI:dialog_no:failed")
+            
+            time.sleep(2)
+            self.progress_signal.emit(100)
+            
+            self.log_signal.emit("🎉 Automation completed successfully!")
+            self.log_signal.emit("📁 Ready for next source if needed...")
+            self.finished_signal.emit(True, "All tasks completed successfully")
+            
+        except Exception as e:
+            self.log_signal.emit(f"❌ Error: {str(e)}")
+            import traceback
+            self.log_signal.emit(traceback.format_exc())
+            self.finished_signal.emit(False, str(e))
+    
+    def _save_final_filename(self, file_path: str):
+        """Save the FINAL filename to a text file"""
+        try:
+            final_txt_path = os.path.join(self.script_dir, "FINAL_start.txt")
+            with open(final_txt_path, "w", encoding="utf-8") as f:
+                f.write(file_path)
+            self.log_signal.emit(f"💾 Saved FINAL filename to: {final_txt_path}")
+        except Exception as e:
+            self.log_signal.emit(f"⚠️ Could not save FINAL filename: {str(e)}")
+
+
+# -------------------------------------------------------
+# DRIVE AUTOMATION WORKER (DEPRECATED - keeping for backward compatibility)
+# -------------------------------------------------------
+class DriveAutomationWorker(QThread):
+    log_signal = Signal(str)
+    status_signal = Signal(str)
+    progress_signal = Signal(int)
+    finished_signal = Signal(bool, str)
+    
+    def __init__(self, drive_link: str, parent=None):
+        super().__init__(parent)
+        self.drive_link = drive_link
+        self.parent_gui = parent
+        self.temp_folder = None
+        self.downloaded_files = []
+        
+    def _extract_folder_id(self, url: str) -> str:
+        import re
+        patterns = [
+            r'/folders/([a-zA-Z0-9_-]+)',
+            r'id=([a-zA-Z0-9_-]+)',
+            r'drive.google.com/open\?id=([a-zA-Z0-9_-]+)'
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        return url
+    
+    def run(self):
+        try:
+            import gdown
+            
+            self.log_signal.emit("🔐 Connecting to Google Drive...")
+            
+            folder_id = self._extract_folder_id(self.drive_link)
+            folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
+            self.log_signal.emit(f"📁 Folder ID: {folder_id}")
+            
+            # Create temp folder
+            self.temp_folder = os.path.join(os.path.dirname(os.path.realpath(__file__)), "temp_automation")
+            os.makedirs(self.temp_folder, exist_ok=True)
+            
+            self.log_signal.emit("🔍 Scanning for TRC files...")
+            self.log_signal.emit("⬇️ Downloading TRC files...")
+            
+            # Download entire folder using gdown
+            gdown.download_folder(url=folder_url, output=self.temp_folder, use_cookies=False)
+            
+            # Find all downloaded .trc files
+            self.downloaded_files = []
+            for root, dirs, files in os.walk(self.temp_folder):
+                for file in files:
+                    if file.lower().endswith('.trc'):
+                        self.downloaded_files.append(os.path.join(root, file))
+            
+            if not self.downloaded_files:
+                self.log_signal.emit("❌ No TRC files found in the provided link")
+                self.finished_signal.emit(False, "No TRC files found")
+                return
+            
+            self.log_signal.emit(f"📊 Found {len(self.downloaded_files)} TRC file(s)")
+            for f in self.downloaded_files:
+                size = os.path.getsize(f) / 1024 / 1024
+                self.log_signal.emit(f"  📄 {os.path.basename(f)} ({size:.1f} MB)")
+            
+            self.progress_signal.emit(30)
+            
+            # Step 2: Click MAKE YOUR LOGS ORGANISED (KEYBOARD SHORTCUT)
+            self.log_signal.emit("📂 Activating 'MAKE YOUR LOGS ORGANISED' (Alt+M)...")
+            self.status_signal.emit("Organising logs...")
+            automation = KeyboardAutomation(window_title="CAN LOG ANALYSER", verbose=True)
+            if automation.click_make_organised():
+                self.log_signal.emit("✅ Button activated via keyboard shortcut")
+            else:
+                self.log_signal.emit("⚠️ Could not activate button")
+            
+            # Wait for logs_organised to complete
+            self.log_signal.emit("⏳ Waiting for logs organisation...")
+            timeout = 120
+            elapsed = 0
+            while elapsed < timeout:
+                if hasattr(self.parent_gui, 'logs_organised_complete') and self.parent_gui.logs_organised_complete:
+                    break
+                time.sleep(1)
+                elapsed += 1
+            
+            if elapsed >= timeout:
+                self.log_signal.emit("⚠️ Timeout waiting for logs organisation")
+            else:
+                self.log_signal.emit("✅ Logs organised successfully")
+            
+            self.progress_signal.emit(50)
+            
+            # Step 3: Find the organised TRC file
+            organised_trc = None
+            if hasattr(self.parent_gui, 'logs_last_output_path') and self.parent_gui.logs_last_output_path:
+                organised_trc = self.parent_gui.logs_last_output_path
+                if os.path.exists(organised_trc):
+                    self.log_signal.emit(f"📄 Organised file: {os.path.basename(organised_trc)}")
+            
+            if not organised_trc or not os.path.exists(organised_trc):
+                # Use the first downloaded TRC file
+                if self.downloaded_files:
+                    organised_trc = self.downloaded_files[0]
+                    self.log_signal.emit(f"📄 Using downloaded file: {os.path.basename(organised_trc)}")
+            
+            if not organised_trc or not os.path.exists(organised_trc):
+                self.log_signal.emit("❌ Could not find TRC file")
+                self.finished_signal.emit(False, "TRC file not found")
+                return
+            
+            # Step 4: Click Browse and select file (KEYBOARD SHORTCUT)
+            self.log_signal.emit("🖱️ Activating file browser (Alt+B)...")
+            automation = KeyboardAutomation(window_title="CAN LOG ANALYSER", verbose=True)
+            if automation.click_browse_file():
+                self.log_signal.emit("✅ Browse button activated")
+                # Handle file selection in dialog
+                if automation.select_file_in_dialog(organised_trc):
+                    self.log_signal.emit(f"✅ File selected: {os.path.basename(organised_trc)}")
+                else:
+                    self.log_signal.emit("⚠️ Could not select file in dialog")
+            else:
+                self.log_signal.emit("⚠️ Could not activate Browse button")
+            
+            time.sleep(3)
+            self.progress_signal.emit(60)
+            
+            # Step 5: Click RUN ALL TEST CASES (KEYBOARD SHORTCUT)
+            self.log_signal.emit("▶️ Activating 'RUN ALL TEST CASES' (Alt+R)...")
+            self.status_signal.emit("Running test cases...")
+            automation = KeyboardAutomation(window_title="CAN LOG ANALYSER", verbose=True)
+            if automation.click_run_all_tests():
+                self.log_signal.emit("✅ Run All Tests activated via keyboard")
+            else:
+                self.log_signal.emit("⚠️ Could not activate Run All Tests button")
+            
+            # Wait for tests to complete
+            self.log_signal.emit("⏳ Waiting for tests to complete...")
+            timeout = 1800
+            elapsed = 0
+            while elapsed < timeout:
+                if hasattr(self.parent_gui, 'tests_complete') and self.parent_gui.tests_complete:
+                    break
+                time.sleep(2)
+                elapsed += 2
+                self.progress_signal.emit(60 + int(elapsed / timeout * 30))
+            
+            if elapsed >= timeout:
+                self.log_signal.emit("⚠️ Timeout waiting for tests")
+            else:
+                self.log_signal.emit("✅ All tests completed")
+            
+            self.progress_signal.emit(90)
+            
+            # Step 6: Click CREATE EXCEL TRACKER (KEYBOARD SHORTCUT)
+            self.log_signal.emit("📊 Activating 'CREATE EXCEL TRACKER' (Alt+C)...")
+            self.status_signal.emit("Generating Excel tracker...")
+            automation = KeyboardAutomation(window_title="CAN LOG ANALYSER", verbose=True)
+            if automation.click_create_excel_tracker():
+                self.log_signal.emit("✅ Create Tracker activated via keyboard")
+            else:
+                self.log_signal.emit("⚠️ Could not activate Create Tracker button")
+            
+            time.sleep(5)
+            self.progress_signal.emit(100)
+            
+            self.log_signal.emit("🎉 Automation completed successfully!")
+            self.finished_signal.emit(True, "All tasks completed successfully")
+            
+        except Exception as e:
+            self.log_signal.emit(f"❌ Error: {str(e)}")
+            import traceback
+            self.log_signal.emit(traceback.format_exc())
+            self.finished_signal.emit(False, str(e))
+
+
+# -------------------------------------------------------
 # COLOR THEME MANAGER
 # -------------------------------------------------------
 class ColorTheme:
     def __init__(self):
-        # Default colors (matching original)
         self.colors = {
             "title_bg_start": "#001F6B",
             "title_bg_mid": "#0033CC", 
@@ -87,8 +750,6 @@ class ColorTheme:
             "xavier_label_bg": "#1FA37A",
             "distance_label_bg": "#1FA37A",
             "mcu_label_bg": "#006400",
-            "serial_label_bg": "#006400",
-            "os_label_bg": "#006400",
             "table_header_bg": "#FF0000",
             "table_header_text": "white",
             "testcase_text": "#1FA37A",
@@ -101,6 +762,7 @@ class ColorTheme:
             "error_bg": "#FF0000",
             "gen_btn_bg": "black",
             "gen_btn_text": "white",
+            "auto_btn_bg": "#17a2b8",
             "vcu_btn_bg": "#28A745",
             "bms_btn_bg": "#28A745",
             "view_btn_bg": "#3a7bd5",
@@ -133,7 +795,7 @@ class ColorTheme:
 
 
 # -------------------------------------------------------
-# COLOR CUSTOMIZATION PANEL (FIXED - BLACK BG, WHITE TEXT)
+# COLOR CUSTOMIZATION PANEL
 # -------------------------------------------------------
 class ColorCustomizationPanel(QDialog):
     def __init__(self, theme: ColorTheme, parent=None):
@@ -143,89 +805,29 @@ class ColorCustomizationPanel(QDialog):
         self.setMinimumSize(580, 700)
         self.setModal(True)
         
-        # BLACK BACKGROUND with WHITE TEXT - completely readable
         self.setStyleSheet("""
-            QDialog {
-                background-color: #000000;
-                color: #ffffff;
-            }
-            QLabel {
-                color: #ffffff;
-                font-weight: bold;
-                font-size: 12px;
-                background-color: transparent;
-            }
-            QComboBox {
-                background-color: #2a2a2a;
-                color: #ffffff;
-                border: 1px solid #555555;
-                padding: 5px;
-                border-radius: 5px;
-                min-width: 110px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #2a2a2a;
-                color: #ffffff;
-                selection-background-color: #4CAF50;
-            }
-            QComboBox::drop-down {
-                border: none;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 5px solid #ffffff;
-                margin-right: 8px;
-            }
-            QPushButton {
-                background-color: #4CAF50;
-                color: #ffffff;
-                border: none;
-                padding: 8px 15px;
-                border-radius: 5px;
-                font-weight: bold;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton#reset {
-                background-color: #f44336;
-            }
-            QPushButton#reset:hover {
-                background-color: #da190b;
-            }
-            QPushButton#save {
-                background-color: #2196F3;
-            }
-            QPushButton#save:hover {
-                background-color: #0b7dda;
-            }
-            QScrollArea {
-                border: none;
-                background-color: transparent;
-            }
-            QFrame {
-                background-color: #1a1a1a;
-                border-radius: 6px;
-            }
-            QFrame#preview {
-                border: 1px solid #666666;
-                border-radius: 5px;
-            }
+            QDialog { background-color: #000000; color: #ffffff; }
+            QLabel { color: #ffffff; font-weight: bold; font-size: 12px; background-color: transparent; }
+            QComboBox { background-color: #2a2a2a; color: #ffffff; border: 1px solid #555555; padding: 5px; border-radius: 5px; min-width: 110px; }
+            QComboBox QAbstractItemView { background-color: #2a2a2a; color: #ffffff; selection-background-color: #4CAF50; }
+            QPushButton { background-color: #4CAF50; color: #ffffff; border: none; padding: 8px 15px; border-radius: 5px; font-weight: bold; font-size: 12px; }
+            QPushButton:hover { background-color: #45a049; }
+            QPushButton#reset { background-color: #f44336; }
+            QPushButton#reset:hover { background-color: #da190b; }
+            QPushButton#save { background-color: #2196F3; }
+            QPushButton#save:hover { background-color: #0b7dda; }
+            QScrollArea { border: none; background-color: transparent; }
+            QFrame { background-color: #1a1a1a; border-radius: 6px; }
         """)
         
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
         
-        # Title
         title = QLabel("🎨 COLOR CUSTOMIZATION")
         title.setStyleSheet("font-size: 18px; font-weight: bold; padding: 12px; background-color: #1a1a1a; border-radius: 8px; color: #00ffcc;")
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
         
-        # Scroll area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -236,7 +838,6 @@ class ColorCustomizationPanel(QDialog):
         scroll_layout.setSpacing(5)
         scroll_layout.setContentsMargins(10, 10, 10, 10)
         
-        # Color options - grouped for better organization
         color_groups = {
             "🎨 TITLE BAR": [
                 ("Title Background Start", "title_bg_start"),
@@ -274,6 +875,7 @@ class ColorCustomizationPanel(QDialog):
             "🔘 BUTTONS": [
                 ("Generate Report BG", "gen_btn_bg"),
                 ("Generate Report Text", "gen_btn_text"),
+                ("Automate Button BG", "auto_btn_bg"),
                 ("View Button BG", "view_btn_bg"),
                 ("Graph Button BG", "graph_btn_bg"),
                 ("Run Button BG", "run_btn_bg"),
@@ -284,47 +886,39 @@ class ColorCustomizationPanel(QDialog):
         self.color_previews = {}
         
         for group_name, options in color_groups.items():
-            # Group header
             group_label = QLabel(group_name)
             group_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #00ffcc; padding: 10px 0px 5px 5px; background-color: transparent;")
             scroll_layout.addWidget(group_label)
             
-            # Separator line
             sep = QFrame()
             sep.setFrameShape(QFrame.HLine)
             sep.setStyleSheet("background-color: #333333; max-height: 1px;")
             scroll_layout.addWidget(sep)
             
             for label_text, color_key in options:
-                # Row frame
                 row_frame = QFrame()
                 row_frame.setStyleSheet("background-color: #1a1a1a; border-radius: 6px;")
                 row_layout = QHBoxLayout(row_frame)
                 row_layout.setContentsMargins(12, 8, 12, 8)
                 row_layout.setSpacing(10)
                 
-                # Label - WHITE TEXT
                 label = QLabel(label_text)
                 label.setMinimumWidth(180)
                 label.setStyleSheet("color: #ffffff; background-color: transparent; font-weight: bold;")
                 row_layout.addWidget(label)
                 
-                # Color preview
                 color_preview = QFrame()
-                color_preview.setObjectName("preview")
                 color_preview.setFixedSize(40, 28)
                 current_color = self.theme.get(color_key, "#1FA37A")
                 color_preview.setStyleSheet(f"background-color: {current_color}; border-radius: 5px; border: 1px solid #888888;")
                 row_layout.addWidget(color_preview)
                 
-                # Hex code display
                 hex_label = QLabel(current_color.upper())
                 hex_label.setStyleSheet("color: #00ffcc; font-family: monospace; font-size: 10px; background-color: #2a2a2a; padding: 4px 8px; border-radius: 4px;")
                 hex_label.setMinimumWidth(80)
                 hex_label.setAlignment(Qt.AlignCenter)
                 row_layout.addWidget(hex_label)
                 
-                # Color picker combo
                 combo = QComboBox()
                 combo.addItems(["Select...", "Red", "Green", "Blue", "Yellow", "Cyan", "Magenta", "Orange", "Purple", "Black", "White", "Custom..."])
                 combo.setMinimumWidth(110)
@@ -343,7 +937,6 @@ class ColorCustomizationPanel(QDialog):
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll)
         
-        # Buttons container
         btn_container = QFrame()
         btn_container.setStyleSheet("background-color: #1a1a1a; border-radius: 8px; margin-top: 5px;")
         btn_layout = QHBoxLayout(btn_container)
@@ -370,7 +963,6 @@ class ColorCustomizationPanel(QDialog):
         
         layout.addWidget(btn_container)
         
-        # Close button
         close_btn = QPushButton("CLOSE")
         close_btn.setStyleSheet("background-color: #6c757d; padding: 10px; font-size: 12px;")
         close_btn.clicked.connect(self.accept)
@@ -380,16 +972,9 @@ class ColorCustomizationPanel(QDialog):
     
     def on_color_selected(self, text, color_key, preview_widget, hex_label):
         color_map = {
-            "Red": "#FF0000",
-            "Green": "#00FF00",
-            "Blue": "#0000FF",
-            "Yellow": "#FFFF00",
-            "Cyan": "#00FFFF",
-            "Magenta": "#FF00FF",
-            "Orange": "#FFA500",
-            "Purple": "#800080",
-            "Black": "#000000",
-            "White": "#FFFFFF",
+            "Red": "#FF0000", "Green": "#00FF00", "Blue": "#0000FF",
+            "Yellow": "#FFFF00", "Cyan": "#00FFFF", "Magenta": "#FF00FF",
+            "Orange": "#FFA500", "Purple": "#800080", "Black": "#000000", "White": "#FFFFFF",
         }
         
         if text == "Custom...":
@@ -420,7 +1005,6 @@ class ColorCustomizationPanel(QDialog):
                 if key in self.color_previews:
                     self.color_previews[key].setStyleSheet(f"background-color: {default_color}; border-radius: 5px; border: 1px solid #888888;")
                 if key in self.color_pickers:
-                    # Also update hex label if exists
                     combo = self.color_pickers[key]
                     if hasattr(combo, 'hex_label') and combo.hex_label:
                         combo.hex_label.setText(default_color.upper())
@@ -445,6 +1029,114 @@ class ColorCustomizationPanel(QDialog):
         self.apply_colors()
 
 
+class TestSequenceDialog(QDialog):
+    def __init__(self, sequence_items: List[str], parent=None):
+        super().__init__(parent)
+        self.default_items = list(sequence_items)
+        self.script_dir = getattr(parent, "script_dir", os.path.dirname(os.path.realpath(__file__)))
+        self.setWindowTitle("Arrange Test Sequence")
+        self.setMinimumSize(520, 640)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+
+        title = QLabel("Arrange Excel Tracker Sequence")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; padding: 10px; background:#2b8ce7; color:white; border-radius:4px;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        layout.addWidget(self.list_widget, 1)
+
+        move_layout = QHBoxLayout()
+        up_btn = QPushButton("Move Up")
+        up_btn.clicked.connect(self.move_up)
+        move_layout.addWidget(up_btn)
+        down_btn = QPushButton("Move Down")
+        down_btn.clicked.connect(self.move_down)
+        move_layout.addWidget(down_btn)
+        reset_btn = QPushButton("Reset Default")
+        reset_btn.clicked.connect(self.reset_default)
+        move_layout.addWidget(reset_btn)
+        layout.addLayout(move_layout)
+
+        btn_layout = QHBoxLayout()
+        save_btn = QPushButton("Save Settings")
+        save_btn.setStyleSheet("background:#28A745; color:white; font-weight:bold; padding:8px;")
+        save_btn.clicked.connect(self.save_sequence)
+        btn_layout.addWidget(save_btn)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+        self.load_sequence()
+
+    def _pointer_path(self) -> str:
+        return os.path.join(self.script_dir, EXCEL_SEQUENCE_POINTER_FILE)
+
+    def _default_sequence_path(self) -> str:
+        return os.path.join(self.script_dir, DEFAULT_EXCEL_SEQUENCE_FILE)
+
+    def _saved_sequence_path(self) -> str:
+        return self._default_sequence_path()
+
+    def _current_items(self) -> List[str]:
+        return [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
+
+    def _set_items(self, items: List[str]):
+        self.list_widget.clear()
+        for item in items:
+            self.list_widget.addItem(QListWidgetItem(item))
+        if self.list_widget.count():
+            self.list_widget.setCurrentRow(0)
+
+    def load_sequence(self):
+        items = []
+        sequence_path = self._saved_sequence_path()
+        if os.path.exists(sequence_path):
+            try:
+                with open(sequence_path, "r", encoding="utf-8") as f:
+                    items = [line.strip() for line in f if line.strip()]
+            except Exception:
+                items = []
+        valid = [item for item in items if item in self.default_items]
+        valid.extend(item for item in self.default_items if item not in valid)
+        self._set_items(valid)
+
+    def move_up(self):
+        row = self.list_widget.currentRow()
+        if row <= 0:
+            return
+        item = self.list_widget.takeItem(row)
+        self.list_widget.insertItem(row - 1, item)
+        self.list_widget.setCurrentRow(row - 1)
+
+    def move_down(self):
+        row = self.list_widget.currentRow()
+        if row < 0 or row >= self.list_widget.count() - 1:
+            return
+        item = self.list_widget.takeItem(row)
+        self.list_widget.insertItem(row + 1, item)
+        self.list_widget.setCurrentRow(row + 1)
+
+    def reset_default(self):
+        self._set_items(self.default_items)
+
+    def save_sequence(self):
+        path = self._saved_sequence_path()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(self._current_items()))
+                f.write("\n")
+            with open(self._pointer_path(), "w", encoding="utf-8") as f:
+                f.write(path)
+            QMessageBox.information(self, "Saved", "Test sequence settings saved.")
+        except Exception as e:
+            QMessageBox.warning(self, "Save Failed", f"Could not save test sequence settings:\n{e}")
+
+
 # -------------------------------------------------------
 # JSON POPUP
 # -------------------------------------------------------
@@ -453,11 +1145,9 @@ class JsonDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Test Result")
         self.resize(550, 380)
-
         layout = QVBoxLayout(self)
         text = QTextEdit()
         text.setReadOnly(True)
-
         if os.path.exists(json_path):
             try:
                 with open(json_path, "r", encoding="cp1252", errors="replace") as f:
@@ -467,10 +1157,8 @@ class JsonDialog(QDialog):
                 pretty = f"Failed to load JSON:\n{e}"
         else:
             pretty = f"File not found:\n{json_path}"
-
         text.setPlainText(pretty)
         layout.addWidget(text)
-
         btn = QPushButton("Close")
         btn.clicked.connect(self.accept)
         layout.addWidget(btn, alignment=Qt.AlignCenter)
@@ -484,11 +1172,9 @@ class ImageDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Graph")
         self.resize(650, 480)
-
         layout = QVBoxLayout(self)
         label = QLabel()
         label.setAlignment(Qt.AlignCenter)
-
         if os.path.exists(image_path):
             pix = QPixmap(image_path)
             if not pix.isNull():
@@ -499,9 +1185,7 @@ class ImageDialog(QDialog):
                 label.setText("Failed to load image.")
         else:
             label.setText(f"File not found:\n{image_path}")
-
         layout.addWidget(label)
-
         btn = QPushButton("Close")
         btn.clicked.connect(self.accept)
         layout.addWidget(btn, alignment=Qt.AlignCenter)
@@ -513,28 +1197,20 @@ class ImageDialog(QDialog):
 class FWCheckerThread(QThread):
     finished_ok = Signal(dict)
     finished_err = Signal(str)
-
     def __init__(self, trc_file):
         super().__init__()
         self.trc_file = trc_file
-
     def run(self):
         try:
-            proc = subprocess.Popen(
-                [sys.executable, FW_CHECKER, self.trc_file],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
+            proc = subprocess.Popen([sys.executable, FW_CHECKER, self.trc_file], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             out, err = proc.communicate()
-
             if proc.returncode != 0:
                 self.finished_err.emit(err)
                 return
-
             try:
                 self.finished_ok.emit(json.loads(out))
             except Exception:
                 self.finished_err.emit("Invalid FW JSON output")
-
         except Exception as e:
             self.finished_err.emit(str(e))
 
@@ -545,32 +1221,21 @@ class FWCheckerThread(QThread):
 class VCUResetThread(QThread):
     finished_ok = Signal(dict)
     finished_err = Signal(str)
-
     def __init__(self, trc_file: str, script_path: str, output_path: str):
         super().__init__()
         self.trc_file = trc_file
         self.script_path = script_path
         self.output_path = output_path
-
     def run(self):
         try:
-            proc = subprocess.Popen(
-                [sys.executable, self.script_path, self.trc_file, self.output_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=os.path.dirname(self.script_path),
-            )
+            proc = subprocess.Popen([sys.executable, self.script_path, self.trc_file, self.output_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=os.path.dirname(self.script_path))
             out, err = proc.communicate()
-
             if proc.returncode != 0:
                 self.finished_err.emit(err or out or "VCU reset script failed")
                 return
-
             with open(self.output_path, "r", encoding="utf-8", errors="ignore") as f:
                 data = json.load(f)
             self.finished_ok.emit(data)
-
         except Exception as e:
             self.finished_err.emit(str(e))
 
@@ -578,32 +1243,21 @@ class VCUResetThread(QThread):
 class BMSResetThread(QThread):
     finished_ok = Signal(dict)
     finished_err = Signal(str)
-
     def __init__(self, trc_file: str, script_path: str, output_path: str):
         super().__init__()
         self.trc_file = trc_file
         self.script_path = script_path
         self.output_path = output_path
-
     def run(self):
         try:
-            proc = subprocess.Popen(
-                [sys.executable, self.script_path, self.trc_file, self.output_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=os.path.dirname(self.script_path),
-            )
+            proc = subprocess.Popen([sys.executable, self.script_path, self.trc_file, self.output_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=os.path.dirname(self.script_path))
             out, err = proc.communicate()
-
             if proc.returncode != 0:
                 self.finished_err.emit(err or out or "BMS reset script failed")
                 return
-
             with open(self.output_path, "r", encoding="utf-8", errors="ignore") as f:
                 data = json.load(f)
             self.finished_ok.emit(data)
-
         except Exception as e:
             self.finished_err.emit(str(e))
 
@@ -614,28 +1268,18 @@ class BMSResetThread(QThread):
 class MCUDetectionThread(QThread):
     finished_ok = Signal(dict)
     finished_err = Signal(str)
-
     def __init__(self, trc_file: str, script_dir: str):
         super().__init__()
         self.trc_file = trc_file
         self.script_dir = script_dir
-
     def run(self):
         try:
-            proc = subprocess.Popen(
-                [sys.executable, os.path.join(self.script_dir, "MCU_detection.py"), self.trc_file],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            proc = subprocess.Popen([sys.executable, os.path.join(self.script_dir, "MCU_detection.py"), self.trc_file], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             out, err = proc.communicate()
-
             if proc.returncode != 0:
                 self.finished_err.emit(err or "MCU detection failed")
                 return
-
             self.finished_ok.emit(json.loads(out.strip()))
-
         except Exception as e:
             self.finished_err.emit(str(e))
 
@@ -649,7 +1293,6 @@ class CANLogDebugger(QWidget):
         self.setWindowTitle("CAN LOG ANALYSER")
         self.setMinimumSize(1250, 780)
 
-        # Initialize color theme
         self.theme = ColorTheme()
         self.theme.load_from_file()
 
@@ -657,9 +1300,7 @@ class CANLogDebugger(QWidget):
         self.logs_last_output_path: Optional[str] = None
         self.script_dir = os.path.dirname(os.path.realpath(__file__))
         self.default_tests_folder = os.path.join(self.script_dir, "TRC TEST CASES")
-        self.tests_folder_overrides = {
-            ".csv": os.path.join(self.script_dir, "CSV TEST CASES"),
-        }
+        self.tests_folder_overrides = {".csv": os.path.join(self.script_dir, "CSV TEST CASES")}
         self.tests_folder = self._tests_folder_for_extension(".trc")
         self.vcu_reset_script = os.path.join(self.script_dir, "TRC TEST CASES", "ECU RESET", "VCU_Reset.py")
         self.vcu_reset_output = os.path.join(self.script_dir, "TRC TEST CASES", "ECU RESET", "VCU_Reset_Result.json")
@@ -676,17 +1317,27 @@ class CANLogDebugger(QWidget):
         self.result_refresh_timer.setInterval(1000)
         self.result_refresh_timer.timeout.connect(self._refresh_pending_results)
 
-        # Initialize lists for dynamic UI elements
         self.testcase_labels = []
         self.run_btns = []
         self.view_btns = []
         self.graph_btns = []
+
+        # Automation flags
+        self.logs_organised_complete = False
+        self.tests_complete = False
+        self.automation_worker = None
+        self.automation_in_progress = False
+        self.auto_input_rows = []
 
         # ---------------- TITLE ----------------
         self.version_label = QLabel(self._read_version_text())
         self.version_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
         self.version_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.version_label.setToolTip("Read from version.txt")
+
+        self.auto_btn = QPushButton("🤖 LET'S AUTOMATE")
+        self.auto_btn.setStyleSheet("background-color: #17a2b8; color: white; font-weight: bold; padding: 8px; border-radius: 4px;")
+        self.auto_btn.clicked.connect(self.on_automate_clicked)
 
         title = QLabel("CAN LOG ANALYSER")
         title.setFont(QFont("Segoe UI", 20, QFont.Bold))
@@ -696,14 +1347,19 @@ class CANLogDebugger(QWidget):
         title_bar_layout = QHBoxLayout()
         title_bar_layout.setContentsMargins(10, 6, 10, 6)
         title_bar_layout.setSpacing(10)
-        title_bar_layout.addWidget(self.version_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+
+        version_col = QVBoxLayout()
+        version_col.setSpacing(4)
+        version_col.addWidget(self.version_label, 0, Qt.AlignLeft | Qt.AlignTop)
+        version_col.addWidget(self.auto_btn, 0, Qt.AlignLeft)
+
+        title_bar_layout.addLayout(version_col, 0)
         title_bar_layout.addWidget(title, 1, Qt.AlignCenter)
         
-        # Theme button
-        self.theme_btn = QPushButton("🎨 Theme")
-        self.theme_btn.setStyleSheet("background:#6c757d; color:white; font-weight:bold; padding:5px 15px; border-radius:5px;")
-        self.theme_btn.clicked.connect(self.open_theme_panel)
-        title_bar_layout.addWidget(self.theme_btn, 0, Qt.AlignRight | Qt.AlignVCenter)
+        self.settings_btn = QPushButton("⚙ Settings")
+        self.settings_btn.setStyleSheet("background:#6c757d; color:white; font-weight:bold; padding:5px 15px; border-radius:5px;")
+        self.settings_btn.clicked.connect(self.open_settings_panel)
+        title_bar_layout.addWidget(self.settings_btn, 0, Qt.AlignRight | Qt.AlignVCenter)
         
         title_bar.setLayout(title_bar_layout)
 
@@ -721,24 +1377,19 @@ class CANLogDebugger(QWidget):
         # LEFT PANEL
         # ---------------------------------------------------
         ft_label = QLabel("Select file type")
-
         self.ft_combo = QComboBox()
         self.ft_combo.addItems([".trc", ".log", ".csv", ".xlsx"])
-
         self.browse_btn = QPushButton("Browse File")
         self.browse_btn.clicked.connect(self.on_browse)
-
         self.file_box = QLineEdit("No file selected")
         self.file_box.setReadOnly(True)
-
         self.make_btn = QPushButton("MAKE YOUR LOGS ORGANISED")
         self.make_btn.clicked.connect(self.on_make_logs)
-
         self.run_all_btn = QPushButton("RUN ALL TEST CASES")
         self.run_all_btn.setEnabled(False)
         self.run_all_btn.clicked.connect(self.start_all_tests)
 
-        # ---------------- Firmware Fields ----------------
+        # Firmware Fields
         def fw_field(name):
             lbl = QLabel(name)
             box = QLineEdit()
@@ -754,7 +1405,6 @@ class CANLogDebugger(QWidget):
         (self.lb_stark_cfg, self.tx_stark_cfg) = fw_field("STARK CONFIG")
         (self.lb_xavier_fw, self.tx_xavier_fw) = fw_field("XAVIER FIRMWARE")
         (self.lb_distance, self.tx_distance) = fw_field("DISTANCE COVERED")
-
         (self.lb_mcu, self.tx_mcu) = fw_field("MCU BRANCH")
         (self.lb_serial, self.tx_serial) = fw_field("SERIAL NO")
         (self.lb_os, self.tx_os) = fw_field("OS Version & OS Build No")
@@ -768,51 +1418,33 @@ class CANLogDebugger(QWidget):
         grid = QGridLayout()
         grid.setSpacing(8)
         grid.setContentsMargins(5, 5, 5, 5)
-
         fw_rows = [
-            (self.lb_hw, self.tx_hw),
-            (self.lb_fw, self.tx_fw),
-            (self.lb_cfg, self.tx_cfg),
-            (self.lb_git, self.tx_git),
-            (self.lb_manifest, self.tx_manifest),
-            (self.lb_stark_fw, self.tx_stark_fw),
-            (self.lb_stark_cfg, self.tx_stark_cfg),
-            (self.lb_xavier_fw, self.tx_xavier_fw),
-            (self.lb_distance, self.tx_distance),
-            (self.lb_mcu, self.tx_mcu),
-            (self.lb_serial, self.tx_serial),
-            (self.lb_os, self.tx_os),
+            (self.lb_hw, self.tx_hw), (self.lb_fw, self.tx_fw), (self.lb_cfg, self.tx_cfg),
+            (self.lb_git, self.tx_git), (self.lb_manifest, self.tx_manifest), (self.lb_stark_fw, self.tx_stark_fw),
+            (self.lb_stark_cfg, self.tx_stark_cfg), (self.lb_xavier_fw, self.tx_xavier_fw), (self.lb_distance, self.tx_distance),
+            (self.lb_mcu, self.tx_mcu), (self.lb_serial, self.tx_serial), (self.lb_os, self.tx_os),
         ]
-
         for r, (l, t) in enumerate(fw_rows):
             grid.addWidget(l, r, 0)
             grid.addWidget(t, r, 1)
-
         grid.setColumnStretch(0, 7)
         grid.setColumnStretch(1, 3)
-
         md_frame = QFrame()
         md_frame.setLayout(grid)
 
-        # ---------------------------------------------------
-        # EXTRA CHECK BUTTONS
-        # ---------------------------------------------------
+        # Extra Check Buttons
         self.btn_vcu = QPushButton("VCU unexpected Reset")
         self.tx_vcu_value = QLineEdit("0")
         self.tx_vcu_result = QLineEdit("N/A")
-
         self.btn_bms = QPushButton("MARVEL BMS unexpected Reset")
         self.tx_bms_value = QLineEdit("0")
         self.tx_bms_result = QLineEdit("N/A")
-
         for t in [self.tx_vcu_value, self.tx_vcu_result, self.tx_bms_value, self.tx_bms_result]:
             t.setReadOnly(True)
-
         self.vcu_value_palette_default = self.tx_vcu_value.palette()
         self.vcu_result_palette_default = self.tx_vcu_result.palette()
         self.bms_value_palette_default = self.tx_bms_value.palette()
         self.bms_result_palette_default = self.tx_bms_result.palette()
-
         self.btn_vcu.setEnabled(False)
         self.btn_bms.setEnabled(False)
         self.btn_vcu.setFocusPolicy(Qt.NoFocus)
@@ -825,47 +1457,34 @@ class CANLogDebugger(QWidget):
         extra_grid.addWidget(self.btn_bms, 1, 0)
         extra_grid.addWidget(self.tx_bms_value, 1, 1)
         extra_grid.addWidget(self.tx_bms_result, 1, 2)
-
         extra_frame = QFrame()
         extra_frame.setLayout(extra_grid)
 
-        # ---------------------------------------------------
-        # GENERATE TRACKER BUTTONS
-        # ---------------------------------------------------
+        # Generate Tracker Buttons
         btn_layout = QHBoxLayout()
-
         self.gen_btn = QPushButton("📄 CREATE REPORT")
         self.gen_btn.clicked.connect(self.generate_tracker)
-
         self.gen_excel_btn = QPushButton("📄 CREATE EXCEL TRACKER")
         self.gen_excel_btn.clicked.connect(self.generate_excel_tracker)
-
         btn_layout.addWidget(self.gen_btn)
         btn_layout.addWidget(self.gen_excel_btn)
-
         btn_frame = QFrame()
         btn_frame.setLayout(btn_layout)
 
-        # ---------------------------------------------------
         # LEFT PANEL FINAL BUILD
-        # ---------------------------------------------------
         left = QVBoxLayout()
-
         left.addWidget(self.make_btn)
-
         top_row = QHBoxLayout()
         top_row.addWidget(ft_label)
         top_row.addWidget(self.ft_combo)
         top_row.addWidget(self.browse_btn)
         left.addLayout(top_row)
-
         left.addWidget(self.file_box)
         left.addWidget(self.run_all_btn)
         left.addWidget(md_frame)
         left.addWidget(extra_frame)
         left.addWidget(btn_frame)
         left.addStretch()
-
         left_frame = QFrame()
         left_frame.setLayout(left)
         left_frame.setFixedWidth(380)
@@ -874,72 +1493,52 @@ class CANLogDebugger(QWidget):
         # RIGHT TABLE PANEL
         # ---------------------------------------------------
         table = QTableWidget(len(TEST_CASES), 5)
-        table.setHorizontalHeaderLabels(
-            ["TEST CASE", "STATUS", "View Results", "View Graph", "Result"]
-        )
+        table.setHorizontalHeaderLabels(["TEST CASE", "STATUS", "View Results", "View Graph", "Result"])
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.verticalHeader().setVisible(False)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        result_header_item = table.horizontalHeaderItem(4)
-        if result_header_item:
-            result_header_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-
         self.table_header = table.horizontalHeader()
         for c in range(5):
             self.table_header.setSectionResizeMode(c, QHeaderView.Fixed)
-
-        total_ratio = 11 + 5 + 5 + 5 + 3
+        total_ratio = 10 + 5 + 5 + 5 + 3
         total_width = 900
-
-        table.setColumnWidth(0, int(total_width * (11 / total_ratio)))
+        table.setColumnWidth(0, int(total_width * (10 / total_ratio)))
         table.setColumnWidth(1, int(total_width * (5 / total_ratio)))
         table.setColumnWidth(2, int(total_width * (5 / total_ratio)))
         table.setColumnWidth(3, int(total_width * (5 / total_ratio)))
         table.setColumnWidth(4, int(total_width * (3 / total_ratio)))
 
         for i, name in enumerate(TEST_CASES):
-            display_name = name
-            if i == 0:
-                display_name = "SoC BEHAVIOR + SoC STUCK"
-
+            display_name = "SoC BEHAVIOR + SoC STUCK" if i == 0 else name
             name_item = QTableWidgetItem(display_name)
             table.setItem(i, 0, name_item)
-
             cell_widget = QWidget()
             cell_widget.setStyleSheet("background:white;")
             h_layout = QHBoxLayout(cell_widget)
             h_layout.setContentsMargins(4, 0, 4, 0)
             h_layout.setSpacing(6)
-
             lbl = QLabel(display_name)
             lbl.setStyleSheet("font-weight:bold; background:white;")
             h_layout.addWidget(lbl, 1)
-
             btn_run = QPushButton("▶")
             btn_run.setToolTip("Run only this test case")
-            btn_run.setStyleSheet(
-                "QPushButton { color:white; font-weight:bold; border-radius:12px; "
-                "min-width:24px; max-width:24px; min-height:24px; max-height:24px; }"
-                "QPushButton:pressed { background:#1f7a33; }"
-            )
+            btn_run.setStyleSheet("QPushButton { color:white; font-weight:bold; border-radius:12px; min-width:24px; max-width:24px; min-height:24px; max-height:24px; } QPushButton:pressed { background:#1f7a33; }")
             btn_run.clicked.connect(lambda _, r=i: self.start_single_test(r))
             btn_run.setFocusPolicy(Qt.NoFocus)
             h_layout.addWidget(btn_run, 0, Qt.AlignRight | Qt.AlignVCenter)
-
             table.setCellWidget(i, 0, cell_widget)
-
             status_item = QTableWidgetItem("Not Run")
             status_item.setTextAlignment(Qt.AlignCenter)
             table.setItem(i, 1, status_item)
             result_item = QTableWidgetItem("N/A")
             result_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             table.setItem(i, 4, result_item)
-
             btn_r = QPushButton("👁 View")
+            btn_r.setStyleSheet("background-color: white; color: black; border: 1px solid #888888; border-radius: 6px; padding: 4px 10px;")
             btn_r.clicked.connect(lambda _, r=i: self.on_view_results(r))
             table.setCellWidget(i, 2, btn_r)
-
             btn_g = QPushButton("📊 Graph")
+            btn_g.setStyleSheet("background-color: white; color: black; border: 1px solid #888888; border-radius: 6px; padding: 4px 10px;")
             btn_g.clicked.connect(lambda _, r=i: self.on_view_graph(r))
             table.setCellWidget(i, 3, btn_g)
             
@@ -952,24 +1551,28 @@ class CANLogDebugger(QWidget):
 
         right = QVBoxLayout()
         right.addWidget(table)
-
         right_frame = QFrame()
         right_frame.setLayout(right)
 
         # ---------------------------------------------------
-        # MAIN LAYOUT
+        # AUTOMATION DIALOG (popup)
         # ---------------------------------------------------
+        self.automation_dialog = None
+        self.auto_link_input = None
+        self.auto_progress = None
+        self.auto_log = None
+        self.auto_start_btn = None
+        self.auto_cancel_btn = None
+
+        # MAIN LAYOUT
         main = QHBoxLayout()
         main.addWidget(left_frame)
         main.addWidget(right_frame, 1)
-
         final = QVBoxLayout()
         final.addWidget(title_bar)
         final.addLayout(main)
-
         self.setLayout(final)
         
-        # Store references for dynamic styling
         self.ft_label = ft_label
         self.title_bar = title_bar
         self.title = title
@@ -978,10 +1581,7 @@ class CANLogDebugger(QWidget):
         self.btn_frame = btn_frame
         self.left_frame = left_frame
         self.right_frame = right_frame
-        self.view_btns = []
-        self.graph_btns = []
         
-        # Apply initial theme
         self.apply_theme_colors()
         
         self.heartbeat_timer = QTimer(self)
@@ -989,125 +1589,439 @@ class CANLogDebugger(QWidget):
         self.heartbeat_timer.start(5000)
 
     # ======================================================
+    # AUTOMATION METHODS
+    # ======================================================
+    def on_automate_clicked(self):
+        if not AUTOMATE_BUTTON_ENABLED:
+            QMessageBox.information(self, "Automation", "This feature is under development.")
+            return
+        self.show_automation_dialog()
+
+    def show_automation_dialog(self):
+        """Show the enhanced automation dialog with multi-link support"""
+        self.automation_dialog = QDialog(self)
+        self.automation_dialog.setWindowTitle("🤖 Drive Automation - Multi Source")
+        self.automation_dialog.setMinimumWidth(600)
+        self.automation_dialog.setMinimumHeight(500)
+        self.automation_dialog.setModal(True)
+        
+        layout = QVBoxLayout(self.automation_dialog)
+        
+        # Title
+        title_label = QLabel("🤖 AUTOMATION - Add Multiple Sources (Max 50)")
+        title_label.setStyleSheet("font-weight: bold; font-size: 14px; padding: 10px; background-color: #17a2b8; color: white; border-radius: 4px;")
+        layout.addWidget(title_label)
+        
+        # Instructions
+        info_label = QLabel("• Add Google Drive folder links OR select local folders containing TRC files\n• Click the + button to add more sources (max 50)\n• Local folders will be copied to temp_automation folder")
+        info_label.setStyleSheet("font-size: 10px; padding: 8px; background-color: #f0f0f0; border-radius: 4px;")
+        layout.addWidget(info_label)
+        
+        # Scroll area for multiple inputs
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        scroll_layout.setContentsMargins(5, 5, 5, 5)
+        scroll_layout.setSpacing(8)
+        
+        # Store list of input rows
+        self.auto_input_rows = []
+        
+        # Add first input
+        self.add_auto_input_row(scroll_layout)
+        
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+        
+        # Add + button to add more inputs
+        add_btn_layout = QHBoxLayout()
+        add_btn = QPushButton("➕ ADD MORE SOURCE (Max 50)")
+        add_btn.setStyleSheet("background-color: #007bff; color: white; font-weight: bold; padding: 8px;")
+        add_btn.clicked.connect(lambda: self.add_auto_input_row(scroll_layout))
+        add_btn_layout.addWidget(add_btn)
+        add_btn_layout.addStretch()
+        layout.addLayout(add_btn_layout)
+        
+        # Progress bar
+        self.auto_progress = QProgressBar()
+        self.auto_progress.setVisible(False)
+        layout.addWidget(self.auto_progress)
+        
+        # Log area
+        self.auto_log = QTextEdit()
+        self.auto_log.setReadOnly(True)
+        self.auto_log.setMaximumHeight(150)
+        self.auto_log.setStyleSheet("background-color: #1e1e1e; color: #00ff00; font-family: monospace; font-size: 9px;")
+        self.auto_log.setVisible(False)
+        layout.addWidget(self.auto_log)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        self.auto_start_btn = QPushButton("🚀 START AUTOMATION")
+        self.auto_start_btn.setStyleSheet("background-color: #28A745; color: white; font-weight: bold; padding: 8px;")
+        self.auto_start_btn.clicked.connect(self.start_automation_from_dialog)
+        btn_layout.addWidget(self.auto_start_btn)
+        
+        self.auto_cancel_btn = QPushButton("❌ CLOSE")
+        self.auto_cancel_btn.setStyleSheet("background-color: #6c757d; color: white; font-weight: bold; padding: 8px;")
+        self.auto_cancel_btn.clicked.connect(self.automation_dialog.reject)
+        btn_layout.addWidget(self.auto_cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.automation_dialog.exec()
+    
+    def add_auto_input_row(self, scroll_layout):
+        """Add a new input row for Google Drive link or local folder"""
+        if len(self.auto_input_rows) >= 50:
+            QMessageBox.warning(self.automation_dialog, "Limit Reached", "Maximum 50 sources allowed!")
+            return
+        
+        row_frame = QFrame()
+        row_frame.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 4px; padding: 8px;")
+        row_layout = QHBoxLayout(row_frame)
+        
+        # Input field
+        input_field = QLineEdit()
+        input_field.setPlaceholderText("Paste Google Drive link OR click Browse to select local folder")
+        row_layout.addWidget(input_field)
+        
+        # Browse button for local folder
+        browse_btn = QPushButton("📁 Browse")
+        browse_btn.setStyleSheet("background-color: #28A745; color: white; font-weight: bold; padding: 6px 12px;")
+        browse_btn.clicked.connect(lambda: self.browse_local_folder(input_field))
+        row_layout.addWidget(browse_btn)
+        
+        # Remove button
+        remove_btn = QPushButton("❌")
+        remove_btn.setStyleSheet("background-color: #dc3545; color: white; font-weight: bold; padding: 6px 12px; max-width: 40px;")
+        remove_btn.clicked.connect(lambda: self.remove_auto_input_row(row_frame))
+        row_layout.addWidget(remove_btn)
+        
+        # Insert before stretch
+        scroll_layout.insertWidget(scroll_layout.count() - 1, row_frame)
+        self.auto_input_rows.append((row_frame, input_field))
+    
+    def browse_local_folder(self, input_field):
+        """Browse and select a local folder"""
+        folder = QFileDialog.getExistingDirectory(self.automation_dialog, "Select Folder with TRC files")
+        if folder:
+            input_field.setText(folder)
+    
+    def remove_auto_input_row(self, row_frame):
+        """Remove an input row"""
+        self.auto_input_rows = [(f, i) for f, i in self.auto_input_rows if f != row_frame]
+        row_frame.deleteLater()
+    
+    def start_automation_from_dialog(self):
+        """Start automation with multiple sources"""
+        # Collect all sources
+        sources = []
+        for _, input_field in self.auto_input_rows:
+            source = input_field.text().strip()
+            if source:
+                sources.append(source)
+        
+        if not sources:
+            QMessageBox.warning(self.automation_dialog, "Error", "Please add at least one Google Drive link or local folder")
+            return
+        
+        if self.automation_worker and self.automation_worker.isRunning():
+            QMessageBox.warning(self.automation_dialog, "Error", "Automation already running")
+            return
+        
+        self.auto_log.clear()
+        self.auto_log.setVisible(True)
+        self.auto_progress.setValue(0)
+        self.auto_progress.setVisible(True)
+        self.auto_start_btn.setEnabled(False)
+        self.auto_cancel_btn.setText("❌ CANCEL")
+        self.auto_cancel_btn.clicked.disconnect()
+        self.auto_cancel_btn.clicked.connect(self.cancel_automation_from_dialog)
+        
+        self.logs_organised_complete = False
+        self.tests_complete = False
+        
+        self.automation_worker = MultiSourceAutomationWorker(sources, self)
+        self.automation_worker.log_signal.connect(self.append_auto_log)
+        self.automation_worker.status_signal.connect(self.handle_automation_status)
+        self.automation_worker.progress_signal.connect(self.auto_progress.setValue)
+        self.automation_worker.finished_signal.connect(self.on_automation_finished_from_dialog)
+        self.automation_worker.start()
+    
+    def cancel_automation_from_dialog(self):
+        if self.automation_worker and self.automation_worker.isRunning():
+            self.automation_worker.terminate()
+            self.automation_worker.wait(2000)
+            self.append_auto_log("🛑 Automation cancelled by user")
+            self.on_automation_finished_from_dialog(False, "Cancelled by user")
+    
+    def on_automation_finished_from_dialog(self, success: bool, message: str):
+        self.auto_start_btn.setEnabled(True)
+        self.auto_cancel_btn.setText("❌ CLOSE")
+        self.auto_cancel_btn.clicked.disconnect()
+        self.auto_cancel_btn.clicked.connect(self.automation_dialog.reject)
+        if success:
+            self.append_auto_log(f"✅ {message}")
+            self.auto_progress.setValue(100)
+        else:
+            self.append_auto_log(f"❌ {message}")
+    
+    def append_auto_log(self, text: str):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.auto_log.append(f"[{timestamp}] {text}")
+        scrollbar = self.auto_log.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def handle_automation_status(self, text: str):
+        # Always append to auto log with a marker
+        self.append_auto_log(f"📌 {text}")
+
+        # Handle UI-specific tags: UI:<widget_name>:<state>
+        if not text.startswith("UI:"):
+            return
+        try:
+            _, widget_key, state = text.split(":", 2)
+        except ValueError:
+            return
+
+        widget_map = {
+            'make_btn': getattr(self, 'make_btn', None),
+            'browse_btn': getattr(self, 'browse_btn', None),
+            'run_all_btn': getattr(self, 'run_all_btn', None),
+            'gen_excel_btn': getattr(self, 'gen_excel_btn', None),
+            'dialog_select': getattr(self, 'browse_btn', None),
+            'dialog_no': getattr(self, 'gen_excel_btn', None),
+        }
+
+        btn = widget_map.get(widget_key)
+        if btn and state in ('start', 'done', 'failed'):
+            if state == 'start':
+                self.flash_button(btn, highlight_color='#ffd54f')
+                # Trigger the actual GUI action when automation starts
+                if widget_key == 'make_btn':
+                    QTimer.singleShot(50, lambda: self.auto_click_make_organised())
+                elif widget_key == 'browse_btn':
+                    # If a file was already determined by the automation, select it
+                    QTimer.singleShot(50, lambda: self._handle_file_selected(self.logs_last_output_path) if getattr(self, 'logs_last_output_path', None) else None)
+                elif widget_key == 'dialog_select':
+                    QTimer.singleShot(50, lambda: self.auto_browse_and_select_file(self.logs_last_output_path if getattr(self, 'logs_last_output_path', None) else ''))
+                elif widget_key == 'run_all_btn':
+                    QTimer.singleShot(50, lambda: self.auto_click_run_all())
+                elif widget_key == 'gen_excel_btn':
+                    QTimer.singleShot(50, lambda: self.auto_click_excel_tracker())
+                elif widget_key == 'dialog_no':
+                    QTimer.singleShot(50, lambda: self.auto_handle_excel_popup())
+            elif state == 'done':
+                self.flash_button(btn, highlight_color='#8bc34a')
+            elif state == 'failed':
+                self.flash_button(btn, highlight_color='#f44336')
+
+    def flash_button(self, button: QPushButton, highlight_color: str = '#ffd54f', duration_ms: int = 800):
+        if not button:
+            return
+        # save original stylesheet
+        if not hasattr(self, '_orig_styles'):
+            self._orig_styles = {}
+        if button not in self._orig_styles:
+            self._orig_styles[button] = button.styleSheet()
+
+        # apply highlight
+        button.setStyleSheet(f"background:{highlight_color}; color:black; font-weight:bold;")
+
+        # restore after timeout
+        QTimer.singleShot(duration_ms, lambda: button.setStyleSheet(self._orig_styles.get(button, '')))
+    
+    def auto_click_make_organised(self):
+        self.logs_organised_complete = False
+        self.on_make_logs()
+    
+    def auto_browse_and_select_file(self, file_path: str):
+        self._handle_file_selected(file_path)
+    
+    def auto_click_run_all(self):
+        self.tests_complete = False
+        self.start_all_tests()
+    
+    def auto_click_excel_tracker(self):
+        self.generate_excel_tracker()
+    
+    def auto_handle_excel_popup(self):
+        """Handle the Excel popup by clicking NO"""
+        # The popup is handled by the automation_in_progress flag in generate_excel_tracker
+        time.sleep(1)  # Wait for dialog to appear
+
+    # ======================================================
     # THEME MANAGEMENT
     # ======================================================
+    def open_settings_panel(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Settings")
+        dialog.setModal(True)
+        dialog.setMinimumSize(460, 330)
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #ffffff;
+            }
+            QLabel {
+                color: white;
+                background: transparent;
+            }
+            QFrame#settingsHeader {
+                background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #001F6B, stop:0.48 #D8002B, stop:1 #0033CC);
+                border-radius: 6px;
+            }
+            QFrame#settingsBody {
+                background-color: #f6f9fd;
+                border: 1px solid #b6c4d8;
+                border-radius: 6px;
+            }
+            QPushButton#settingsOption {
+                background-color: #ffffff;
+                color: #09214a;
+                border: 1px solid #9fb3cf;
+                border-left: 6px solid #2B8CE7;
+                border-radius: 6px;
+                padding: 12px 14px;
+                font-weight: bold;
+                text-align: left;
+                min-height: 38px;
+            }
+            QPushButton#settingsOption:hover {
+                background-color: #eaf4ff;
+                border: 1px solid #2B8CE7;
+                border-left: 6px solid #FF0000;
+            }
+            QPushButton#settingsClose {
+                background-color: #6c757d;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 8px 18px;
+                font-weight: bold;
+            }
+            QPushButton#settingsClose:hover {
+                background-color: #5a6268;
+            }
+        """)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
+
+        header = QFrame()
+        header.setObjectName("settingsHeader")
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(18, 16, 18, 16)
+        title = QLabel("CAN LOG ANALYSER SETTINGS")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size:18px; font-weight:bold;")
+        subtitle = QLabel("Choose what you want to configure")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("font-size:11px; color:#e8f7ff;")
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        layout.addWidget(header)
+
+        body = QFrame()
+        body.setObjectName("settingsBody")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(16, 16, 16, 16)
+        body_layout.setSpacing(10)
+
+        theme_btn = QPushButton("🎨  Theme")
+        theme_btn.setObjectName("settingsOption")
+        theme_btn.clicked.connect(lambda: (dialog.accept(), self.open_theme_panel()))
+        body_layout.addWidget(theme_btn)
+
+        sequence_btn = QPushButton("📋  Arrange Test Sequence")
+        sequence_btn.setObjectName("settingsOption")
+        sequence_btn.clicked.connect(lambda: (dialog.accept(), self.open_test_sequence_panel()))
+        body_layout.addWidget(sequence_btn)
+
+        note = QLabel("Saved test sequence is used when creating the Excel tracker.")
+        note.setStyleSheet("color:#3f536e; font-size:10px; padding:4px 2px;")
+        body_layout.addWidget(note)
+
+        layout.addWidget(body)
+
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("settingsClose")
+        close_btn.clicked.connect(dialog.reject)
+        layout.addWidget(close_btn, 0, Qt.AlignRight)
+        dialog.exec()
+
+    def open_test_sequence_panel(self):
+        items = self._load_excel_tracker_headers()
+        if not items:
+            QMessageBox.warning(self, "Test Sequence", "Could not read tracker sequence from Excel_Tracker.py")
+            return
+        dialog = TestSequenceDialog(items, self)
+        dialog.exec()
+
+    def _load_excel_tracker_headers(self) -> List[str]:
+        tracker_path = os.path.join(self.script_dir, "Excel_Tracker.py")
+        try:
+            with open(tracker_path, "r", encoding="utf-8") as f:
+                tree = ast.parse(f.read(), filename=tracker_path)
+            for node in tree.body:
+                if isinstance(node, ast.Assign):
+                    names = [target.id for target in node.targets if isinstance(target, ast.Name)]
+                    if "HEADERS" in names:
+                        headers = ast.literal_eval(node.value)
+                        return [str(item) for item in headers]
+        except Exception:
+            return []
+        return []
+
     def open_theme_panel(self):
         dialog = ColorCustomizationPanel(self.theme, self)
         dialog.exec()
     
     def apply_theme_colors(self):
-        # Title bar gradient
-        gradient = (
-            "qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
-            f"stop:0 {self.theme.get('title_bg_start')}, "
-            f"stop:0.5 {self.theme.get('title_bg_mid')}, "
-            f"stop:1 {self.theme.get('title_bg_end')})"
-        )
+        gradient = ("qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
+                    f"stop:0 {self.theme.get('title_bg_start')}, "
+                    f"stop:0.5 {self.theme.get('title_bg_mid')}, "
+                    f"stop:1 {self.theme.get('title_bg_end')})")
         self.title_container.setStyleSheet(f"background:{gradient}; border:0px;")
-        self.title_label.setStyleSheet(
-            f"color:{self.theme.get('title_text')}; padding:10px; font-weight:bold; background:transparent;"
-        )
-        self.version_label.setStyleSheet(
-            f"color:{self.theme.get('version_text')}; padding:0 12px; font-weight:bold; background:transparent;"
-        )
-        
-        # File type label
-        self.ft_label.setStyleSheet(
-            f"background:{self.theme.get('ft_label_bg')}; color:white; padding:8px; font-weight:bold;"
-        )
-        
-        # Buttons
-        self.browse_btn.setStyleSheet(
-            f"background:{self.theme.get('browse_btn_bg')}; color:white; font-weight:bold;"
-        )
-        self.make_btn.setStyleSheet(
-            f"background:{self.theme.get('make_btn_bg')}; color:white; font-weight:bold;"
-        )
-        self.run_all_btn.setStyleSheet(
-            f"background:{self.theme.get('run_all_btn_bg')}; color:white; font-weight:bold;"
-        )
-        
-        # Firmware labels
+        self.title_label.setStyleSheet(f"color:{self.theme.get('title_text')}; padding:10px; font-weight:bold; background:transparent;")
+        self.version_label.setStyleSheet(f"color:{self.theme.get('version_text')}; padding:0 12px; font-weight:bold; background:transparent;")
+        self.ft_label.setStyleSheet(f"background:{self.theme.get('ft_label_bg')}; color:white; padding:8px; font-weight:bold;")
+        self.browse_btn.setStyleSheet(f"background:{self.theme.get('browse_btn_bg')}; color:white; font-weight:bold;")
+        self.make_btn.setStyleSheet(f"background:{self.theme.get('make_btn_bg')}; color:white; font-weight:bold;")
+        self.run_all_btn.setStyleSheet(f"background:{self.theme.get('run_all_btn_bg')}; color:white; font-weight:bold;")
         for lbl in self.bms_labels:
-            lbl.setStyleSheet(
-                f"background:{self.theme.get('bms_label_bg')}; color:white; padding:6px; font-weight:bold;"
-            )
+            lbl.setStyleSheet(f"background:{self.theme.get('bms_label_bg')}; color:white; padding:6px; font-weight:bold;")
         for lbl in self.stark_labels:
-            lbl.setStyleSheet(
-                f"background:{self.theme.get('stark_label_bg')}; color:white; padding:6px; font-weight:bold;"
-            )
+            lbl.setStyleSheet(f"background:{self.theme.get('stark_label_bg')}; color:white; padding:6px; font-weight:bold;")
         for lbl in self.xavier_labels:
-            lbl.setStyleSheet(
-                f"background:{self.theme.get('xavier_label_bg')}; color:white; padding:6px; font-weight:bold;"
-            )
+            lbl.setStyleSheet(f"background:{self.theme.get('xavier_label_bg')}; color:white; padding:6px; font-weight:bold;")
         for lbl in self.distance_labels:
-            lbl.setStyleSheet(
-                f"background:{self.theme.get('distance_label_bg')}; color:white; padding:6px; font-weight:bold;"
-            )
+            lbl.setStyleSheet(f"background:{self.theme.get('distance_label_bg')}; color:white; padding:6px; font-weight:bold;")
         for lbl in self.mcu_labels:
-            lbl.setStyleSheet(
-                f"background:{self.theme.get('mcu_label_bg')}; color:white; padding:6px; font-weight:bold;"
-            )
-        
-        # Table header
-        self.table_header.setStyleSheet(
-            f"QHeaderView::section {{ background-color: {self.theme.get('table_header_bg')}; "
-            f"color: {self.theme.get('table_header_text')}; font-weight: bold; }}"
-        )
-        
-        # Test case text color
+            lbl.setStyleSheet(f"background:{self.theme.get('mcu_label_bg')}; color:white; padding:6px; font-weight:bold;")
+        self.table_header.setStyleSheet(f"QHeaderView::section {{ background-color: {self.theme.get('table_header_bg')}; color: {self.theme.get('table_header_text')}; font-weight: bold; }}")
         for lbl in self.testcase_labels:
-            lbl.setStyleSheet(
-                f"color:{self.theme.get('testcase_text')}; font-weight:bold; background:white;"
-            )
-        
-        # Run buttons
+            lbl.setStyleSheet(f"color:{self.theme.get('testcase_text')}; font-weight:bold; background:white;")
         for btn in self.run_btns:
-            btn.setStyleSheet(
-                f"QPushButton {{ background:{self.theme.get('run_btn_bg')}; color:white; font-weight:bold; border-radius:12px; "
-                "min-width:24px; max-width:24px; min-height:24px; max-height:24px; }}"
-                "QPushButton:pressed { background:#1f7a33; }"
-            )
-        
-        # View buttons
-        for btn in self.view_btns:
-            btn.setStyleSheet(
-                f"background:{self.theme.get('view_btn_bg')}; color:white; font-weight:bold;"
-            )
-        
-        # Graph buttons
-        for btn in self.graph_btns:
-            btn.setStyleSheet(
-                f"background:{self.theme.get('graph_btn_bg')}; color:white; font-weight:bold;"
-            )
-        
-        # Generate buttons
-        self.gen_btn.setStyleSheet(
-            f"background:{self.theme.get('gen_btn_bg')}; color:{self.theme.get('gen_btn_text')}; padding:10px; font-weight:bold;"
-        )
-        self.gen_excel_btn.setStyleSheet(
-            f"background:{self.theme.get('gen_btn_bg')}; color:{self.theme.get('gen_btn_text')}; padding:10px; font-weight:bold;"
-        )
-        
-        # VCU/BMS buttons
-        self.btn_vcu.setStyleSheet(
-            f"QPushButton {{ background:{self.theme.get('vcu_btn_bg')}; color:white; font-weight:bold; "
-            "border:1px solid #1f7a33; border-radius:4px; padding:6px; }}"
-            "QPushButton:disabled { background:#28A745; color:white; border:1px solid #1f7a33; }"
-        )
-        self.btn_bms.setStyleSheet(
-            f"QPushButton {{ background:{self.theme.get('bms_btn_bg')}; color:white; font-weight:bold; "
-            "border:1px solid #1f7a33; border-radius:4px; padding:6px; }}"
-            "QPushButton:disabled { background:#28A745; color:white; border:1px solid #1f7a33; }"
-        )
-        
-        # Refresh running visuals
+            btn.setStyleSheet(f"QPushButton {{ background:{self.theme.get('run_btn_bg')}; color:white; font-weight:bold; border-radius:12px; min-width:24px; max-width:24px; min-height:24px; max-height:24px; }} QPushButton:pressed {{ background:#1f7a33; }}")
+        self.gen_btn.setStyleSheet(f"background:{self.theme.get('gen_btn_bg')}; color:{self.theme.get('gen_btn_text')}; padding:10px; font-weight:bold;")
+        self.gen_excel_btn.setStyleSheet(f"background:{self.theme.get('gen_btn_bg')}; color:{self.theme.get('gen_btn_text')}; padding:10px; font-weight:bold;")
+        if AUTOMATE_BUTTON_ENABLED:
+            self.auto_btn.setStyleSheet(f"background:{self.theme.get('auto_btn_bg')}; color:white; font-weight:bold; padding:8px; border-radius:4px;")
+            self.auto_btn.setToolTip("")
+        else:
+            self.auto_btn.setStyleSheet("background:#9aa3a8; color:white; font-weight:bold; padding:8px; border-radius:4px;")
+            self.auto_btn.setToolTip("This feature is under development.")
+        self.btn_vcu.setStyleSheet(f"QPushButton {{ background:{self.theme.get('vcu_btn_bg')}; color:white; font-weight:bold; border:1px solid #1f7a33; border-radius:4px; padding:6px; }} QPushButton:disabled {{ background:#28A745; color:white; border:1px solid #1f7a33; }}")
+        self.btn_bms.setStyleSheet(f"QPushButton {{ background:{self.theme.get('bms_btn_bg')}; color:white; font-weight:bold; border:1px solid #1f7a33; border-radius:4px; padding:6px; }} QPushButton:disabled {{ background:#28A745; color:white; border:1px solid #1f7a33; }}")
         if self.running_rows:
             phase = self.title_anim_step / 100.0
             for row in list(self.running_rows):
                 self._set_running_visual(row, phase)
-        
-        # Refresh result cells
         for row in self.pending_result_rows:
             self.update_result_cell(row)
 
@@ -1118,50 +2032,29 @@ class CANLogDebugger(QWidget):
         highlight = self.title_anim_step / 100.0
         start = max(0.0, highlight - 0.2)
         end = min(1.0, highlight + 0.2)
-        gradient = (
-            "qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
-            f"stop:0 {self.theme.get('title_bg_start')}, "
-            f"stop:{start:.2f} {self.theme.get('title_bg_mid')}, "
-            f"stop:{highlight:.2f} {self.theme.get('title_bg_end')}, "
-            f"stop:{end:.2f} {self.theme.get('title_bg_mid')}, "
-            f"stop:1 {self.theme.get('title_bg_start')})"
-        )
-        
+        gradient = ("qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
+                    f"stop:0 {self.theme.get('title_bg_start')}, "
+                    f"stop:{start:.2f} {self.theme.get('title_bg_mid')}, "
+                    f"stop:{highlight:.2f} {self.theme.get('title_bg_end')}, "
+                    f"stop:{end:.2f} {self.theme.get('title_bg_mid')}, "
+                    f"stop:1 {self.theme.get('title_bg_start')})")
         if getattr(self, "title_container", None):
             self.title_container.setStyleSheet(f"background:{gradient}; border:0px;")
-            self.title_label.setStyleSheet(
-                f"color:{self.theme.get('title_text')}; padding:10px; font-weight:bold; background:transparent;"
-            )
+            self.title_label.setStyleSheet(f"color:{self.theme.get('title_text')}; padding:10px; font-weight:bold; background:transparent;")
             if getattr(self, "version_label", None):
-                self.version_label.setStyleSheet(
-                    f"color:{self.theme.get('version_text')}; padding:0 12px; font-weight:bold; background:transparent;"
-                )
-        
+                self.version_label.setStyleSheet(f"color:{self.theme.get('version_text')}; padding:0 12px; font-weight:bold; background:transparent;")
         if getattr(self, "make_btn_animating", False) and getattr(self, "make_btn", None):
-            btn_style = (
-                "color:white; font-weight:bold; padding:10px;"
-                f"background:{gradient};"
-            )
-            self.make_btn.setStyleSheet(btn_style)
-
+            self.make_btn.setStyleSheet(f"color:white; font-weight:bold; padding:10px; background:{gradient};")
         if getattr(self, "run_all_animating", False) and getattr(self, "run_all_btn", None):
-            run_gradient = (
-                "qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
-                f"stop:0 #0A2F0A, stop:{start:.2f} #0F6B0F, stop:{highlight:.2f} #32CD32, "
-                f"stop:{end:.2f} #0F6B0F, stop:1 #0A2F0A)"
-            )
-            self.run_all_btn.setStyleSheet(
-                f"color:white; font-weight:bold; padding:10px; background:{run_gradient};"
-            )
-
+            run_gradient = ("qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
+                           f"stop:0 #0A2F0A, stop:{start:.2f} #0F6B0F, stop:{highlight:.2f} #32CD32, "
+                           f"stop:{end:.2f} #0F6B0F, stop:1 #0A2F0A)")
+            self.run_all_btn.setStyleSheet(f"color:white; font-weight:bold; padding:10px; background:{run_gradient};")
         if getattr(self, "running_rows", None) and getattr(self, "test_table", None):
             phase = self.title_anim_step / 100.0
             for row in list(self.running_rows):
                 self._set_running_visual(row, phase)
 
-    # ======================================================
-    # UTILS: CELL STYLING & SCRIPT PATHS
-    # ======================================================
     def _read_version_text(self) -> str:
         version_file = os.path.join(self.script_dir, "version.txt")
         try:
@@ -1237,6 +2130,7 @@ class CANLogDebugger(QWidget):
         self.run_all_btn.setText("RUN ALL TEST CASES")
         self.run_all_btn.setStyleSheet(f"background:{self.theme.get('run_all_btn_bg')}; color:white; font-weight:bold;")
         self.run_all_animating = False
+        self.tests_complete = True
 
     def _refresh_pending_results(self):
         if not self.pending_result_rows:
@@ -1280,7 +2174,6 @@ class CANLogDebugger(QWidget):
                 config_data = {k.lower(): v for k, v in raw.items() if isinstance(v, dict)}
             except Exception:
                 config_data = {}
-
         output_by_row: Dict[int, Dict[str, str]] = {}
         for row, script_name in SCRIPT_BY_ROW.items():
             test_name = TEST_CASES[row].lower()
@@ -1335,23 +2228,17 @@ class CANLogDebugger(QWidget):
 
     def on_make_logs(self):
         logs_script = os.path.join(self.script_dir, "logs_organised.py")
-
         if not os.path.exists(logs_script):
             QMessageBox.warning(self, "Error", f"logs_organised.py not found:\n{logs_script}")
             return
-
         self.logs_last_output_path = None
-
         self.make_btn.setText("RUNNING....Pls Wait")
         self.make_btn_animating = True
         self._update_title_glow()
         self.make_btn.setEnabled(False)
         home = os.path.expanduser("~")
         initial_dir = ""
-        candidates = [
-            os.path.join(home, "Downloads"),
-            os.path.join(home, "Desktop"),
-        ]
+        candidates = [os.path.join(home, "Downloads"), os.path.join(home, "Desktop")]
         for d in candidates:
             if os.path.isdir(d):
                 initial_dir = d
@@ -1363,10 +2250,8 @@ class CANLogDebugger(QWidget):
                 initial_dir = "C:/"
         self.logs_proc = QProcess(self)
         self.logs_proc.setWorkingDirectory(self.script_dir)
-
         self.logs_proc.finished.connect(self.on_logs_finished)
         self.logs_proc.readyReadStandardOutput.connect(self._on_logs_stdout)
-
         self.logs_proc.start(sys.executable, [logs_script, initial_dir])
 
     def on_logs_finished(self):
@@ -1374,7 +2259,6 @@ class CANLogDebugger(QWidget):
         self.make_btn.setText("LOGS ARE ORGANISED ✅, RETRY ?")
         self.make_btn.setStyleSheet(f"background-color: {self.theme.get('completed_bg')}; color: white; font-weight: bold;")
         self.make_btn.setEnabled(True)
-
         if not self.logs_last_output_path:
             marker = os.path.join(self.script_dir, "last_merged_trc.txt")
             if os.path.exists(marker):
@@ -1384,6 +2268,7 @@ class CANLogDebugger(QWidget):
                     candidate = ""
                 if candidate and os.path.exists(candidate):
                     self.logs_last_output_path = candidate
+        self.logs_organised_complete = True
 
     def _on_logs_stdout(self):
         proc = getattr(self, "logs_proc", None)
@@ -1400,9 +2285,6 @@ class CANLogDebugger(QWidget):
                 if candidate:
                     self.logs_last_output_path = candidate
 
-    # ======================================================
-    # FILE BROWSE
-    # ======================================================
     def _register_scan_task(self):
         self.scan_tasks += 1
 
@@ -1414,20 +2296,15 @@ class CANLogDebugger(QWidget):
     def _handle_file_selected(self, path: str):
         if not path:
             return
-
         file_ext = os.path.splitext(path)[1].lower()
         self._set_tests_folder_for_extension(file_ext)
-
         self.selected_file_path = path
         self.file_box.setText(path)
         self.run_all_btn.setEnabled(True)
-
         self.scan_tasks = 0
         self.browse_btn.setEnabled(False)
         self.browse_btn.setText("Scanning...")
-
         self._start_fw_scan(path)
-
         if file_ext == ".trc":
             self._start_mcu_detection(path)
             self._start_vcu_reset_check(path, track_scan=True)
@@ -1448,26 +2325,14 @@ class CANLogDebugger(QWidget):
             initial_dir = os.path.dirname(self.selected_file_path)
         else:
             home = os.path.expanduser("~")
-            candidates = [
-                os.path.join(home, "Downloads"),
-                os.path.join(home, "Desktop"),
-                home,
-            ]
+            candidates = [os.path.join(home, "Downloads"), os.path.join(home, "Desktop"), home]
             for d in candidates:
                 if os.path.isdir(d):
                     initial_dir = d
                     break
-
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select File",
-            initial_dir,
-            f"{ft} Files (*{ft})",
-        )
-
+        path, _ = QFileDialog.getOpenFileName(self, "Select File", initial_dir, f"{ft} Files (*{ft})")
         if not path:
             return
-
         self._handle_file_selected(path)
 
     def _start_fw_scan(self, path: str):
@@ -1483,11 +2348,9 @@ class CANLogDebugger(QWidget):
         self.tx_mcu.setText("...")
         self.tx_serial.setText("...")
         self.tx_os.setText("...")
-
         thread = MCUDetectionThread(path, self.script_dir)
         self.mcu_thread = thread
         self._register_scan_task()
-
         thread.finished_ok.connect(self.update_mcu_fields)
         thread.finished_err.connect(self.on_mcu_error)
         thread.finished.connect(self._on_scan_finished)
@@ -1508,12 +2371,10 @@ class CANLogDebugger(QWidget):
             self.reset_vcu_fields()
             QMessageBox.warning(self, "Error", f"VCU reset script not found:\n{self.vcu_reset_script}")
             return
-
         self.btn_vcu.setEnabled(False)
         self.tx_vcu_value.setText("Count : ...")
         self.tx_vcu_result.setText("...")
         self._style_vcu_fields(None)
-
         thread = VCUResetThread(path, self.vcu_reset_script, self.vcu_reset_output)
         if track_scan:
             self._register_scan_task()
@@ -1534,24 +2395,20 @@ class CANLogDebugger(QWidget):
                 QMessageBox.warning(self, "Error", "No file loaded!")
             self.reset_bms_fields()
             return
-
         if not os.path.exists(self.bms_reset_script):
             self.reset_bms_fields()
             QMessageBox.warning(self, "Error", f"BMS reset script not found:\n{self.bms_reset_script}")
             return
-
         ext = os.path.splitext(path)[1].lower()
         if ext != ".trc":
             self.reset_bms_fields()
             if manual:
                 QMessageBox.warning(self, "Error", "BMS reset check only runs on .trc files.")
             return
-
         self.btn_bms.setEnabled(False)
         self.tx_bms_value.setText("Count : ...")
         self.tx_bms_result.setText("...")
         self._style_bms_fields(None)
-
         thread = BMSResetThread(path, self.bms_reset_script, self.bms_reset_output)
         if track_scan:
             self._register_scan_task()
@@ -1581,7 +2438,6 @@ class CANLogDebugger(QWidget):
         self.tx_stark_fw.setText(info.get("STARK_FIRMWARE", ""))
         self.tx_stark_cfg.setText(info.get("STARK_CONFIG", ""))
         self.tx_xavier_fw.setText(info.get("XAVIER_FIRMWARE", ""))
-
         def _fmt_dist(val):
             if val is None:
                 return ""
@@ -1589,7 +2445,6 @@ class CANLogDebugger(QWidget):
                 return f"{float(val):.1f} km"
             except Exception:
                 return f"{val} km" if val else ""
-
         dist_val = info.get("DISTANCE_COVERED_KM", info.get("DISTANCE_COVERED", ""))
         self.tx_distance.setText(_fmt_dist(dist_val))
 
@@ -1658,14 +2513,12 @@ class CANLogDebugger(QWidget):
             widget.setPalette(pal)
             widget.setStyleSheet(f"QLineEdit {{ background:{bg}; color:{fg}; font-weight:bold; }}")
             widget.setAlignment(Qt.AlignCenter)
-
         if result == "PASS":
             bg, fg = self.theme.get("pass_bg"), "white"
         elif result == "FAIL":
             bg, fg = self.theme.get("fail_bg"), "white"
         else:
             bg, fg = "", ""
-
         apply_style(self.tx_vcu_value, self.vcu_value_palette_default, bg, fg)
         apply_style(self.tx_vcu_result, self.vcu_result_palette_default, bg, fg)
 
@@ -1682,47 +2535,33 @@ class CANLogDebugger(QWidget):
             widget.setPalette(pal)
             widget.setStyleSheet(f"QLineEdit {{ background:{bg}; color:{fg}; font-weight:bold; }}")
             widget.setAlignment(Qt.AlignCenter)
-
         if result == "PASS":
             bg, fg = self.theme.get("pass_bg"), "white"
         elif result == "FAIL":
             bg, fg = self.theme.get("fail_bg"), "white"
         else:
             bg, fg = "", ""
-
         apply_style(self.tx_bms_value, self.bms_value_palette_default, bg, fg)
         apply_style(self.tx_bms_result, self.bms_result_palette_default, bg, fg)
 
     def on_fw_error(self, err):
         QMessageBox.warning(self, "FW Error", err)
 
-    # ======================================================
-    # RUN ALL TEST CASES
-    # ======================================================
     def start_all_tests(self):
         if not self.selected_file_path:
             QMessageBox.warning(self, "Error", "Browse a file first")
             return
-
         if any(p.state() != QProcess.NotRunning for p in self.processes.values()):
-            QMessageBox.information(
-                self,
-                "Info",
-                "Some tests are already running. Please wait for them to finish before running all.",
-            )
+            QMessageBox.information(self, "Info", "Some tests are already running. Please wait for them to finish before running all.")
             return
-
         if CLEAR_OUTPUTS_ON_RUN_ALL:
             self._clear_all_outputs()
-
         self.run_all_btn.setEnabled(False)
         self.run_all_btn.setText("RUNNING... Pls Wait")
         self.run_all_animating = True
         self._update_title_glow()
-
         self.pending_result_rows.clear()
         self._ensure_result_timer_running()
-
         for i in range(len(TEST_CASES)):
             status_item = QTableWidgetItem("Not Run")
             status_item.setTextAlignment(Qt.AlignCenter)
@@ -1730,86 +2569,64 @@ class CANLogDebugger(QWidget):
             result_item = QTableWidgetItem("N/A")
             result_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             self.test_table.setItem(i, 4, result_item)
-
         self.processes.clear()
         python = sys.executable
         self.running_rows.clear()
         self.running_started_at.clear()
         self.running_pct.clear()
-
         for row, script in SCRIPT_BY_ROW.items():
             folder_path, script_path = self._get_test_script_paths(row)
-
             if not folder_path or not os.path.exists(script_path):
                 self._set_colored_cell(row, 1, "Missing/Incorrect", self.theme.get("error_bg"))
                 continue
-
             self.pending_result_rows.add(row)
             self._ensure_result_timer_running()
-
             self._mark_row_running(row)
-
             proc = QProcess(self)
             proc.setWorkingDirectory(folder_path)
-
             proc.finished.connect(lambda exitCode, _status, r=row: self.on_test_finished(r, exitCode))
             proc.errorOccurred.connect(lambda _e, r=row: self.on_test_error(r))
             proc.readyReadStandardOutput.connect(lambda r=row: self._on_test_stdout(r))
-
             proc.start(python, [script, self.selected_file_path])
             self.processes[row] = proc
-
         if not self.processes:
             self.run_all_btn.setEnabled(True)
             self.run_all_btn.setText("RUN ALL TEST CASES")
             self.run_all_btn.setStyleSheet(f"background:{self.theme.get('run_all_btn_bg')}; color:white; font-weight:bold;")
             self.run_all_animating = False
 
-    # ======================================================
-    # RUN SINGLE TEST CASE
-    # ======================================================
     def start_single_test(self, row: int):
         if not self.selected_file_path:
             QMessageBox.warning(self, "Error", "Browse a file first")
             return
-
         proc = self.processes.get(row)
         if proc and proc.state() != QProcess.NotRunning:
             QMessageBox.information(self, "Info", "This test is already running.")
             return
-
         if CLEAR_OUTPUTS_ON_RUN_ALL:
             self._clear_outputs_for_row(row)
-
         status_item = QTableWidgetItem("Not Run")
         status_item.setTextAlignment(Qt.AlignCenter)
         self.test_table.setItem(row, 1, status_item)
         result_item = QTableWidgetItem("N/A")
         result_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.test_table.setItem(row, 4, result_item)
-
         folder_path, script_path = self._get_test_script_paths(row)
         if not folder_path or not os.path.exists(script_path):
             self._set_colored_cell(row, 1, "Missing/Incorrect", self.theme.get("error_bg"))
             return
-
         python = sys.executable
-
         self.pending_result_rows.add(row)
         self._ensure_result_timer_running()
-
         self.running_rows.discard(row)
         self.running_started_at.pop(row, None)
         self.running_pct.pop(row, None)
         self._mark_row_running(row)
-
         proc = QProcess(self)
         proc.setWorkingDirectory(folder_path)
-
         proc.finished.connect(lambda exitCode, _status, r=row: self.on_test_finished(r, exitCode))
         proc.errorOccurred.connect(lambda _e, r=row: self.on_test_error(r, _e))
         proc.readyReadStandardOutput.connect(lambda r=row: self._on_test_stdout(r))
-
         proc.start(python, [script_path, self.selected_file_path])
         self.processes[row] = proc
 
@@ -1825,7 +2642,6 @@ class CANLogDebugger(QWidget):
             self._set_colored_cell(row, 1, "Missing/Incorrect", self.theme.get("error_bg"))
             if not self.update_result_cell(row):
                 self._schedule_result_update(row)
-
         self._maybe_finish_run_all()
 
     def on_test_error(self, row, _):
@@ -1843,7 +2659,6 @@ class CANLogDebugger(QWidget):
             data = proc.readAllStandardOutput().data().decode("utf-8", errors="ignore")
         except Exception:
             return
-
         for line in data.splitlines():
             if not line.startswith("PROGRESS"):
                 continue
@@ -1858,14 +2673,12 @@ class CANLogDebugger(QWidget):
             prev = self.running_pct.get(row, 0.0)
             if pct >= prev:
                 self.running_pct[row] = pct
-
         if row in self.running_pct:
             self._set_running_visual(row, getattr(self, "title_anim_step", 0) / 100.0)
 
     def _mark_result_missing(self, row: int, reason: Optional[str] = None):
         if self.update_result_cell(row):
             return
-
         if reason is None:
             result_path = self._get_result_file_path(row)
             if result_path:
@@ -1888,57 +2701,41 @@ class CANLogDebugger(QWidget):
         results_path = self._get_result_file_path(row)
         if not results_path:
             return False
-
         if not os.path.exists(results_path):
             return False
-
         try:
             with open(results_path, "r") as f:
                 data = json.load(f)
             result_str = str(data.get("Result", "")).strip().upper()
         except Exception:
             return False
-
         tooltip = f"Read from {os.path.basename(results_path)}"
         success = False
         if result_str == "PASS":
-            self._set_colored_cell(
-                row, 4, "PASS", self.theme.get("pass_bg"), align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip
-            )
+            self._set_colored_cell(row, 4, "PASS", self.theme.get("pass_bg"), align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip)
             success = True
         elif result_str == "FAIL":
-            self._set_colored_cell(
-                row, 4, "FAIL", self.theme.get("fail_bg"), align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip
-            )
+            self._set_colored_cell(row, 4, "FAIL", self.theme.get("fail_bg"), align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip)
             success = True
         elif result_str == "WARNING":
-            self._set_colored_cell(
-                row, 4, "WARNING", self.theme.get("warning_bg"), align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip
-            )
+            self._set_colored_cell(row, 4, "WARNING", self.theme.get("warning_bg"), align=Qt.AlignLeft | Qt.AlignVCenter, tooltip=tooltip)
             success = True
-
         if success:
             status_item = self.test_table.item(row, 1)
             current_status = (status_item.text() if status_item else "").strip().lower()
             if current_status != "completed":
                 self._set_colored_cell(row, 1, "Completed", self.theme.get("completed_bg"))
-
             if row in self.pending_result_rows:
                 self.pending_result_rows.discard(row)
                 self._ensure_result_timer_running()
             self._maybe_finish_run_all()
         return success
 
-    def _schedule_result_update(
-        self, row: int, attempts: int = RESULT_POLL_ATTEMPTS, delay_ms: int = RESULT_POLL_DELAY_MS
-    ):
+    def _schedule_result_update(self, row: int, attempts: int = RESULT_POLL_ATTEMPTS, delay_ms: int = RESULT_POLL_DELAY_MS):
         if attempts <= 0:
             self._mark_result_missing(row)
             return
-        QTimer.singleShot(
-            delay_ms,
-            lambda r=row, a=attempts - 1, d=delay_ms: self._retry_result_update(r, a, d),
-        )
+        QTimer.singleShot(delay_ms, lambda r=row, a=attempts - 1, d=delay_ms: self._retry_result_update(r, a, d))
 
     def _retry_result_update(self, row: int, attempts: int, delay_ms: int):
         if self.update_result_cell(row):
@@ -1948,12 +2745,8 @@ class CANLogDebugger(QWidget):
         else:
             self._schedule_result_update(row, attempts, delay_ms)
 
-    # ======================================================
-    # VIEW RESULT / GRAPH
-    # ======================================================
     def on_view_results(self, idx):
         self.update_result_cell(idx)
-
         summary_path = self._get_output_file_path(idx, "summary")
         if not summary_path:
             QMessageBox.information(self, "Info", "No summary file configured for this test.")
@@ -1969,11 +2762,7 @@ class CANLogDebugger(QWidget):
         if not os.path.exists(graph_path):
             QMessageBox.information(self, "Info", f"File not found:\n{graph_path}")
             return
-
-        candidate_viewers = [
-            r"C:\Program Files (x86)\Microsoft Office\Office12\OIS.EXE",
-            r"C:\Program Files\Microsoft Office\Office12\OIS.EXE",
-        ]
+        candidate_viewers = [r"C:\Program Files (x86)\Microsoft Office\Office12\OIS.EXE", r"C:\Program Files\Microsoft Office\Office12\OIS.EXE"]
         for viewer in candidate_viewers:
             if os.path.exists(viewer):
                 try:
@@ -1981,23 +2770,17 @@ class CANLogDebugger(QWidget):
                     return
                 except Exception:
                     pass
-
         try:
             os.startfile(graph_path)
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to open graph:\n{e}")
 
-    # ======================================================
-    # GENERATE TRACKER
-    # ======================================================
     def generate_tracker(self):
         if not self.selected_file_path:
             QMessageBox.warning(self, "Error", "No file selected!")
             return
-
         docx_path = os.path.join(self.script_dir, "tracker_summary.docx")
         generator_script = os.path.join(self.script_dir, "Generate_Tracker.py")
-
         meta_payload = {
             "VEHICLE NAME": os.path.basename(self.selected_file_path),
             "BMS HW VERSION": self.tx_hw.text(),
@@ -2014,40 +2797,22 @@ class CANLogDebugger(QWidget):
             "BMS Reset Count": self.tx_bms_value.text(),
             "BMS Reset Result": self.tx_bms_result.text(),
         }
-
         if not os.path.exists(generator_script):
             QMessageBox.warning(self, "Tracker", f"Generate_Tracker.py not found:\n{generator_script}")
             return
-
         try:
             env = os.environ.copy()
             env["META_JSON"] = json.dumps(meta_payload)
             env["SELECTED_FILE_NAME"] = os.path.basename(self.selected_file_path)
-
-            proc = subprocess.run(
-                [sys.executable, generator_script, docx_path, self.tests_folder],
-                cwd=self.script_dir,
-                capture_output=True,
-                text=True,
-                env=env,
-            )
+            proc = subprocess.run([sys.executable, generator_script, docx_path, self.tests_folder], cwd=self.script_dir, capture_output=True, text=True, env=env)
         except Exception as e:
             QMessageBox.warning(self, "Tracker", f"Failed to start tracker script:\n{e}")
             return
-
         if proc.returncode != 0:
             err_msg = proc.stderr.strip() or proc.stdout.strip() or "Tracker script returned an error."
             QMessageBox.warning(self, "Tracker", err_msg)
             return
-
-        reply = QMessageBox.question(
-            self,
-            "Tracker",
-            f"Tracker generated:\n{docx_path}\n\nDo you want to open this report?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-
+        reply = QMessageBox.question(self, "Tracker", f"Tracker generated:\n{docx_path}\n\nDo you want to open this report?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if reply == QMessageBox.Yes:
             try:
                 if sys.platform.startswith("win"):
@@ -2063,10 +2828,8 @@ class CANLogDebugger(QWidget):
         if not self.selected_file_path:
             QMessageBox.warning(self, "Error", "No file selected!")
             return
-
         excel_path = os.path.join(self.script_dir, "TRACKER.xlsx")
         generator_script = os.path.join(self.script_dir, "Excel_Tracker.py")
-
         meta_payload = {
             "VEHICLE NAME": os.path.basename(self.selected_file_path),
             "BMS HW VERSION": self.tx_hw.text(),
@@ -2083,40 +2846,28 @@ class CANLogDebugger(QWidget):
             "BMS Reset Count": self.tx_bms_value.text(),
             "BMS Reset Result": self.tx_bms_result.text(),
         }
-
         if not os.path.exists(generator_script):
             QMessageBox.warning(self, "Excel Tracker", f"Excel_Tracker.py not found:\n{generator_script}")
             return
-
         try:
             env = os.environ.copy()
             env["META_JSON"] = json.dumps(meta_payload)
             env["SELECTED_FILE_NAME"] = os.path.basename(self.selected_file_path)
-
-            proc = subprocess.run(
-                [sys.executable, generator_script, excel_path, self.tests_folder],
-                cwd=self.script_dir,
-                capture_output=True,
-                text=True,
-                env=env,
-            )
+            proc = subprocess.run([sys.executable, generator_script, excel_path, self.tests_folder], cwd=self.script_dir, capture_output=True, text=True, env=env)
         except Exception as e:
             QMessageBox.warning(self, "Excel Tracker", f"Failed to start script:\n{e}")
             return
-
         if proc.returncode != 0:
             err_msg = proc.stderr.strip() or proc.stdout.strip() or "Excel tracker script returned an error."
             QMessageBox.warning(self, "Excel Tracker", err_msg)
             return
-
-        reply = QMessageBox.question(
-            self,
-            "Excel Tracker",
-            f"Excel tracker generated:\n{excel_path}\n\nDo you want to open this file?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-
+        
+        # If automation is in progress, skip the popup and just click NO
+        if getattr(self, 'automation_in_progress', False):
+            return
+        
+        # Normal popup behavior
+        reply = QMessageBox.question(self, "Excel Tracker", f"Excel tracker generated:\n{excel_path}\n\nDo you want to open this file?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if reply == QMessageBox.Yes:
             try:
                 if sys.platform.startswith("win"):
@@ -2131,15 +2882,7 @@ class CANLogDebugger(QWidget):
 
 def send_heartbeat():
     try:
-        requests.post(
-            "https://heartbeat-server-1z5n.onrender.com/heartbeat",
-            json={
-                "device": socket.gethostname(),
-                "name": os.getlogin(),
-                "status": "running"
-            },
-            timeout=2
-        )
+        requests.post("https://heartbeat-server-1z5n.onrender.com/heartbeat", json={"device": socket.gethostname(), "name": os.getlogin(), "status": "running"}, timeout=2)
     except:
         pass
 
@@ -2154,9 +2897,6 @@ def check_kill_switch():
         return False
 
 
-# -------------------------------------------------------
-# MAIN
-# -------------------------------------------------------
 def run_updater_first(app: QApplication):
     version_file = os.path.join(os.path.dirname(__file__), "version.txt")
     try:
@@ -2166,7 +2906,6 @@ def run_updater_first(app: QApplication):
         local_version = "1.0.0"
     except Exception:
         local_version = "1.0.0"
-
     check_for_update(local_version=local_version, app=app)
 
 
@@ -2174,13 +2913,9 @@ def main():
     if check_kill_switch():
         runner_path = os.path.join(os.path.dirname(__file__), "runner.py")
         if os.path.exists(runner_path):
-            subprocess.Popen(
-                [sys.executable, runner_path],
-                creationflags=subprocess.CREATE_NEW_CONSOLE
-            )
+            subprocess.Popen([sys.executable, runner_path], creationflags=subprocess.CREATE_NEW_CONSOLE)
         time.sleep(2)
         sys.exit(0)
-
     app = QApplication(sys.argv)
     run_updater_first(app)
     w = CANLogDebugger()
