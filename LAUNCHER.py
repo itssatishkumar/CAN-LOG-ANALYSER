@@ -1299,6 +1299,7 @@ class CANLogDebugger(QWidget):
         self.selected_file_path = ""
         self.logs_last_output_path: Optional[str] = None
         self.script_dir = os.path.dirname(os.path.realpath(__file__))
+        self._excel_tracker_headers_cache: Optional[List[str]] = None
         self.default_tests_folder = os.path.join(self.script_dir, "TRC TEST CASES")
         self.tests_folder_overrides = {".csv": os.path.join(self.script_dir, "CSV TEST CASES")}
         self.tests_folder = self._tests_folder_for_extension(".trc")
@@ -1358,7 +1359,7 @@ class CANLogDebugger(QWidget):
         
         self.settings_btn = QPushButton("⚙ Settings")
         self.settings_btn.setStyleSheet("background:#6c757d; color:white; font-weight:bold; padding:5px 15px; border-radius:5px;")
-        self.settings_btn.clicked.connect(self.open_settings_panel)
+        self.settings_btn.clicked.connect(self.on_settings_clicked)
         title_bar_layout.addWidget(self.settings_btn, 0, Qt.AlignRight | Qt.AlignVCenter)
         
         title_bar.setLayout(title_bar_layout)
@@ -1593,9 +1594,9 @@ class CANLogDebugger(QWidget):
     # ======================================================
     def on_automate_clicked(self):
         if not AUTOMATE_BUTTON_ENABLED:
-            QMessageBox.information(self, "Automation", "This feature is under development.")
+            QTimer.singleShot(30, lambda: QMessageBox.information(self, "Automation", "This feature is under development."))
             return
-        self.show_automation_dialog()
+        QTimer.singleShot(30, self.show_automation_dialog)
 
     def show_automation_dialog(self):
         """Show the enhanced automation dialog with multi-link support"""
@@ -1856,6 +1857,13 @@ class CANLogDebugger(QWidget):
     # ======================================================
     # THEME MANAGEMENT
     # ======================================================
+    def _open_after_settings(self, dialog: QDialog, callback):
+        dialog.accept()
+        QTimer.singleShot(60, callback)
+
+    def on_settings_clicked(self):
+        QTimer.singleShot(30, self.open_settings_panel)
+
     def open_settings_panel(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Settings")
@@ -1894,6 +1902,11 @@ class CANLogDebugger(QWidget):
                 background-color: #eaf4ff;
                 border: 1px solid #2B8CE7;
                 border-left: 6px solid #FF0000;
+            }
+            QPushButton#settingsOption:pressed {
+                background-color: #d9ecff;
+                padding-top: 14px;
+                padding-bottom: 10px;
             }
             QPushButton#settingsClose {
                 background-color: #6c757d;
@@ -1934,12 +1947,12 @@ class CANLogDebugger(QWidget):
 
         theme_btn = QPushButton("🎨  Theme")
         theme_btn.setObjectName("settingsOption")
-        theme_btn.clicked.connect(lambda: (dialog.accept(), self.open_theme_panel()))
+        theme_btn.clicked.connect(lambda: self._open_after_settings(dialog, self.open_theme_panel))
         body_layout.addWidget(theme_btn)
 
         sequence_btn = QPushButton("📋  Arrange Test Sequence")
         sequence_btn.setObjectName("settingsOption")
-        sequence_btn.clicked.connect(lambda: (dialog.accept(), self.open_test_sequence_panel()))
+        sequence_btn.clicked.connect(lambda: self._open_after_settings(dialog, self.open_test_sequence_panel))
         body_layout.addWidget(sequence_btn)
 
         note = QLabel("Saved test sequence is used when creating the Excel tracker.")
@@ -1955,14 +1968,20 @@ class CANLogDebugger(QWidget):
         dialog.exec()
 
     def open_test_sequence_panel(self):
-        items = self._load_excel_tracker_headers()
-        if not items:
-            QMessageBox.warning(self, "Test Sequence", "Could not read tracker sequence from Excel_Tracker.py")
-            return
-        dialog = TestSequenceDialog(items, self)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            items = self._load_excel_tracker_headers()
+            if not items:
+                QMessageBox.warning(self, "Test Sequence", "Could not read tracker sequence from Excel_Tracker.py")
+                return
+            dialog = TestSequenceDialog(items, self)
+        finally:
+            QApplication.restoreOverrideCursor()
         dialog.exec()
 
     def _load_excel_tracker_headers(self) -> List[str]:
+        if self._excel_tracker_headers_cache is not None:
+            return list(self._excel_tracker_headers_cache)
         tracker_path = os.path.join(self.script_dir, "Excel_Tracker.py")
         try:
             with open(tracker_path, "r", encoding="utf-8") as f:
@@ -1972,13 +1991,18 @@ class CANLogDebugger(QWidget):
                     names = [target.id for target in node.targets if isinstance(target, ast.Name)]
                     if "HEADERS" in names:
                         headers = ast.literal_eval(node.value)
-                        return [str(item) for item in headers]
+                        self._excel_tracker_headers_cache = [str(item) for item in headers]
+                        return list(self._excel_tracker_headers_cache)
         except Exception:
             return []
         return []
 
     def open_theme_panel(self):
-        dialog = ColorCustomizationPanel(self.theme, self)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            dialog = ColorCustomizationPanel(self.theme, self)
+        finally:
+            QApplication.restoreOverrideCursor()
         dialog.exec()
     
     def apply_theme_colors(self):
