@@ -1,4 +1,5 @@
 import os
+import sys
 import gspread
 from google.oauth2.service_account import Credentials
 from gspread.utils import rowcol_to_a1
@@ -9,6 +10,8 @@ from openpyxl.styles import Font, PatternFill, Alignment
 SPREADSHEET_ID = "1nDkL93epR1RQfFvCrzAVeiu5a9TpaU2484sOaVkQAQw"
 WORKSHEET_ID = 141417471
 SERVICE_ACCOUNT_FILE = "Google_sheet.json"
+EXCEL_SEQUENCE_POINTER_FILE = "excel_tracker_sequence_path.txt"
+DEFAULT_EXCEL_SEQUENCE_FILE = "excel_tracker_sequence.txt"
 
 # ---------------- CONNECT ----------------
 def get_sheet():
@@ -82,6 +85,39 @@ HEADERS = [
     "STARK F/W Config",
     "Xavier F/W"
 ]
+
+def _script_dir():
+    return os.path.dirname(os.path.realpath(__file__))
+
+
+def _sequence_pointer_path():
+    return os.path.join(_script_dir(), EXCEL_SEQUENCE_POINTER_FILE)
+
+
+def _default_sequence_path():
+    return os.path.join(_script_dir(), DEFAULT_EXCEL_SEQUENCE_FILE)
+
+
+def _read_sequence_path():
+    return _default_sequence_path()
+
+
+def apply_saved_sequence(headers, values):
+    sequence_path = _read_sequence_path()
+    if not os.path.exists(sequence_path):
+        return headers, values
+
+    try:
+        with open(sequence_path, "r", encoding="utf-8") as f:
+            saved_order = [line.strip() for line in f if line.strip()]
+    except Exception:
+        return headers, values
+
+    header_to_value = dict(zip(headers, values))
+    ordered_headers = [header for header in saved_order if header in header_to_value]
+    ordered_headers.extend(header for header in headers if header not in ordered_headers)
+    ordered_values = [header_to_value.get(header) for header in ordered_headers]
+    return ordered_headers, ordered_values
 
 def reset_sheet(sheet):
     existing = sheet.get_all_values()
@@ -960,12 +996,13 @@ def build_row():
 
     return [row]
 
-def save_to_excel(row):
+def save_to_excel(row, output_path="TRACKER.xlsx"):
     wb = Workbook()
     ws = wb.active
+    headers, values = apply_saved_sequence(HEADERS, row[0])
 
-    ws.append(HEADERS)
-    ws.append(row[0])
+    ws.append(headers)
+    ws.append(values)
 
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -980,14 +1017,14 @@ def save_to_excel(row):
         bottom=Side(style='thin')
     )
 
-    for col in range(1, len(HEADERS) + 1):
+    for col in range(1, len(headers) + 1):
         cell = ws.cell(row=1, column=col)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = center_alignment
         cell.border = thin_border
 
-    for col in range(1, len(HEADERS) + 1):
+    for col in range(1, len(headers) + 1):
         cell = ws.cell(row=2, column=col)
         cell.alignment = center_alignment
         cell.border = thin_border
@@ -1008,12 +1045,12 @@ def save_to_excel(row):
         "Peak Regen Current and Duration"
     ]
 
-    for col_idx, header in enumerate(HEADERS, start=1):
+    for col_idx, header in enumerate(headers, start=1):
         if header in target_headers:
             col_letter = ws.cell(row=1, column=col_idx).column_letter
             ws.column_dimensions[col_letter].width = 80
 
-    wb.save("TRACKER.xlsx")
+    wb.save(output_path)
 
 
 # ---------------- MAIN ----------------
@@ -1040,7 +1077,8 @@ def main():
     except Exception:
         pass
 
-    save_to_excel(row)
+    output_path = sys.argv[1] if len(sys.argv) > 1 else "TRACKER.xlsx"
+    save_to_excel(row, output_path)
     print("DONE")
 
 
