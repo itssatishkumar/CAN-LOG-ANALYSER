@@ -8,10 +8,28 @@ import time
 import re
 import ast
 import urllib.request
+import importlib.util
 import requests
 import socket
 import threading
 import shutil
+
+
+def ensure_package_installed(import_name: str, package_name: str):
+    if importlib.util.find_spec(import_name):
+        return
+    print(f"Installing missing package: {package_name}")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+    except Exception as e:
+        raise RuntimeError(
+            f"Required package '{package_name}' is missing and auto-install failed. "
+            f"Please install it manually with: {sys.executable} -m pip install {package_name}"
+        ) from e
+
+
+ensure_package_installed("pyautogui", "pyautogui")
+ensure_package_installed("pygetwindow", "PyGetWindow")
 import pyautogui
 import pygetwindow as gw
 from typing import Dict, Optional, Set, List
