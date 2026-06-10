@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import gspread
 from google.oauth2.service_account import Credentials
 from gspread.utils import rowcol_to_a1
@@ -10,7 +11,6 @@ from openpyxl.styles import Font, PatternFill, Alignment
 SPREADSHEET_ID = "1nDkL93epR1RQfFvCrzAVeiu5a9TpaU2484sOaVkQAQw"
 WORKSHEET_ID = 141417471
 SERVICE_ACCOUNT_FILE = "Google_sheet.json"
-EXCEL_SEQUENCE_POINTER_FILE = "excel_tracker_sequence_path.txt"
 DEFAULT_EXCEL_SEQUENCE_FILE = "excel_tracker_sequence.txt"
 
 # ---------------- CONNECT ----------------
@@ -90,10 +90,6 @@ def _script_dir():
     return os.path.dirname(os.path.realpath(__file__))
 
 
-def _sequence_pointer_path():
-    return os.path.join(_script_dir(), EXCEL_SEQUENCE_POINTER_FILE)
-
-
 def _default_sequence_path():
     return os.path.join(_script_dir(), DEFAULT_EXCEL_SEQUENCE_FILE)
 
@@ -102,16 +98,51 @@ def _read_sequence_path():
     return _default_sequence_path()
 
 
+def _read_sequence_items(sequence_path, valid_headers):
+    try:
+        with open(sequence_path, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except Exception:
+        return []
+
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed if str(item).strip()]
+    except Exception:
+        pass
+
+    valid_header_set = set(valid_headers)
+    items = []
+    pending = ""
+    for line in raw.splitlines():
+        part = line.strip()
+        if not part:
+            continue
+        if pending:
+            combined = f"{pending}\n{part}"
+            if combined in valid_header_set:
+                items.append(combined)
+                pending = ""
+                continue
+            if pending in valid_header_set:
+                items.append(pending)
+            pending = ""
+        if part in valid_header_set:
+            items.append(part)
+        else:
+            pending = part
+    if pending and pending in valid_header_set:
+        items.append(pending)
+    return items
+
+
 def apply_saved_sequence(headers, values):
     sequence_path = _read_sequence_path()
     if not os.path.exists(sequence_path):
         return headers, values
 
-    try:
-        with open(sequence_path, "r", encoding="utf-8") as f:
-            saved_order = [line.strip() for line in f if line.strip()]
-    except Exception:
-        return headers, values
+    saved_order = _read_sequence_items(sequence_path, headers)
 
     header_to_value = dict(zip(headers, values))
     ordered_headers = [header for header in saved_order if header in header_to_value]
