@@ -261,7 +261,6 @@ TEST_CASES = [
 FW_CHECKER = "FW_Config_checker.py"
 CLEAR_OUTPUTS_ON_RUN_ALL = True
 AUTOMATE_BUTTON_ENABLED = False
-EXCEL_SEQUENCE_POINTER_FILE = "excel_tracker_sequence_path.txt"
 DEFAULT_EXCEL_SEQUENCE_FILE = "excel_tracker_sequence.txt"
 
 SCRIPT_BY_ROW: Dict[int, str] = {
@@ -1089,16 +1088,66 @@ class TestSequenceDialog(QDialog):
         btn_layout.addWidget(close_btn)
         layout.addLayout(btn_layout)
 
+        self.ensure_sequence_file()
         self.load_sequence()
-
-    def _pointer_path(self) -> str:
-        return os.path.join(self.script_dir, EXCEL_SEQUENCE_POINTER_FILE)
 
     def _default_sequence_path(self) -> str:
         return os.path.join(self.script_dir, DEFAULT_EXCEL_SEQUENCE_FILE)
 
     def _saved_sequence_path(self) -> str:
         return self._default_sequence_path()
+
+    def _write_sequence_items(self, path: str, items: List[str]):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(items, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+
+    def ensure_sequence_file(self):
+        path = self._saved_sequence_path()
+        if os.path.exists(path):
+            return
+        try:
+            self._write_sequence_items(path, self.default_items)
+        except Exception:
+            pass
+
+    def _read_sequence_items(self, path: str) -> List[str]:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = f.read()
+        except Exception:
+            return []
+
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if str(item).strip()]
+        except Exception:
+            pass
+
+        valid_items = set(self.default_items)
+        items = []
+        pending = ""
+        for line in raw.splitlines():
+            part = line.strip()
+            if not part:
+                continue
+            if pending:
+                combined = f"{pending}\n{part}"
+                if combined in valid_items:
+                    items.append(combined)
+                    pending = ""
+                    continue
+                if pending in valid_items:
+                    items.append(pending)
+                pending = ""
+            if part in valid_items:
+                items.append(part)
+            else:
+                pending = part
+        if pending and pending in valid_items:
+            items.append(pending)
+        return items
 
     def _current_items(self) -> List[str]:
         return [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
@@ -1114,11 +1163,7 @@ class TestSequenceDialog(QDialog):
         items = []
         sequence_path = self._saved_sequence_path()
         if os.path.exists(sequence_path):
-            try:
-                with open(sequence_path, "r", encoding="utf-8") as f:
-                    items = [line.strip() for line in f if line.strip()]
-            except Exception:
-                items = []
+            items = self._read_sequence_items(sequence_path)
         valid = [item for item in items if item in self.default_items]
         valid.extend(item for item in self.default_items if item not in valid)
         self._set_items(valid)
@@ -1141,15 +1186,15 @@ class TestSequenceDialog(QDialog):
 
     def reset_default(self):
         self._set_items(self.default_items)
+        try:
+            self._write_sequence_items(self._saved_sequence_path(), self.default_items)
+        except Exception as e:
+            QMessageBox.warning(self, "Reset Failed", f"Could not save default test sequence:\n{e}")
 
     def save_sequence(self):
         path = self._saved_sequence_path()
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("\n".join(self._current_items()))
-                f.write("\n")
-            with open(self._pointer_path(), "w", encoding="utf-8") as f:
-                f.write(path)
+            self._write_sequence_items(path, self._current_items())
             QMessageBox.information(self, "Saved", "Test sequence settings saved.")
         except Exception as e:
             QMessageBox.warning(self, "Save Failed", f"Could not save test sequence settings:\n{e}")
