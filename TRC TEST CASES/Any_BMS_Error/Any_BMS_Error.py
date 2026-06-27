@@ -126,6 +126,8 @@ ERROR_SIGNALS = {
     "contactorCommandMissing_LD":  {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 3},
     "openWireDetected":            {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 4},
     "contactorCommandMissing_CHG": {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 5},
+    "Thermal_Imbalance":           {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 6},
+    "Current_Out_Of_Bounds":       {"can_id": 0x0260, "type": "bit", "byte": 3, "bit": 7},
 
 }
 INTERESTING_CAN_IDS = set(v["can_id"] for v in ERROR_SIGNALS.values())
