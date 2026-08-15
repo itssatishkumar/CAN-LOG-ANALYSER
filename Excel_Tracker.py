@@ -571,11 +571,24 @@ def test_soc_delta():
     if not os.path.exists(path):
         return None
 
-    with open(path) as f:
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
         lines = f.readlines()
 
-    if len(lines) >= 2:
-        line = lines[1]
+    rank_lines = []
+    for line in lines:
+        line_str = line.strip()
+        if line_str.startswith("Rank "):
+            parts = line_str.split(":", 1)
+            if len(parts) == 2:
+                rank_num = parts[0].replace("Rank", "").strip()
+                rest = parts[1].strip()
+                rank_lines.append(f"{rank_num}. {rest}")
+
+    if rank_lines:
+        return "\n".join(rank_lines)
+
+    # Fallback for old single-line Max SoC Delta format
+    for line in lines:
         if "Max SoC Delta" in line:
             return line.split(":", 1)[1].replace('"', '').strip()
 
@@ -590,13 +603,10 @@ def test_soc_stuck():
     if not os.path.exists(path):
         return None
 
-    with open(path) as f:
-        lines = f.readlines()
-
-    if len(lines) >= 3:
-        line = lines[2]
-        if "Any SoC stuck" in line:
-            return line.split(":", 1)[1].strip()
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if "Any SoC stuck" in line:
+                return line.split(":", 1)[1].strip()
 
     return None
 
