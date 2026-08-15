@@ -41,12 +41,16 @@ pattern = re.compile(
 
 PRECHARGE_ID = 0x0110
 FAIL_FLAG_ID = 0x0258
+TERMINAL_V_CAN_IDS = (0x0156, 0x0342)  # BO_ 342 (342 decimal = 0x0156, 342 hex = 0x0342)
+PACK_V_CAN_IDS = (0x0109, 0x0265)      # BO_ 265 (265 decimal = 0x0109, 265 hex = 0x0265)
 
 timestamps = []
 flags = []
 currents = []
 full_ts_list = []
 precharge_fail_samples = []
+terminal_v_samples = []
+pack_v_samples = []
 
 
 # -----------------------------------------------------
@@ -78,6 +82,20 @@ with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         if can_id == FAIL_FLAG_ID:
             fail = (data[1] >> 5) & 0x01
             precharge_fail_samples.append((ts_ms, fail))
+
+        # -------- TERMINAL SENSING VOLTAGE --------
+        # BO_ 342 BC_Dynamic_inst SG_ Terminal_Sensing_V : 32|16@1+ (0.1,0)
+        if can_id in TERMINAL_V_CAN_IDS and len(data) >= 6:
+            raw_term = data[4] | (data[5] << 8)
+            term_v = raw_term * 0.1
+            terminal_v_samples.append((ts_ms, term_v))
+
+        # -------- PACK VOLTAGE --------
+        # BO_ 265 AA_Batt_Param_2 SG_ Pack_Voltage : 48|16@1+ (0.1,0)
+        if can_id in PACK_V_CAN_IDS and len(data) >= 8:
+            raw_pack = data[6] | (data[7] << 8)
+            pack_v = raw_pack * 0.1
+            pack_v_samples.append((ts_ms, pack_v))
 
         # -------- PRECHARGE FRAME --------
         if can_id == PRECHARGE_ID and len(data) >= 8:
@@ -117,7 +135,7 @@ if df.empty:
 
 
 # -----------------------------------------------------
-# Helper: format current values two per line
+# Helper: format current/voltage values two per line
 # -----------------------------------------------------
 def format_currents_multiline(curr_list):
     lines = []
@@ -125,6 +143,17 @@ def format_currents_multiline(curr_list):
         pair = curr_list[i:i+2]
         lines.append(", ".join(f"{v:.6f}" for v in pair))
     return "\n".join(lines)
+
+
+def format_voltages_multiline(v_list):
+    if not v_list:
+        return "N/A"
+    lines = []
+    for i in range(0, len(v_list), 2):
+        pair = v_list[i:i+2]
+        lines.append(", ".join(f"{v:.2f}V" for v in pair))
+    return "\n".join(lines)
+
 
 def get_line_count(multiline_str):
     return multiline_str.count("\n") + 1
@@ -160,6 +189,38 @@ for i in range(1, len(df)):
         end_curr = block["current"].iloc[-1]
 
         # -----------------------------------------------------
+        # Terminal Sensing Voltage & Pack Voltage during precharge
+        # -----------------------------------------------------
+        v_in_block = [v for t_v, v in terminal_v_samples if ts_start <= t_v <= ts_end]
+        if not v_in_block:
+            last_v = [v for t_v, v in terminal_v_samples if t_v <= ts_end]
+            v_in_block = [last_v[-1]] if last_v else []
+
+        v_multiline = format_voltages_multiline(v_in_block)
+
+        # Final Terminal Sensing Voltage
+        final_term_v = v_in_block[-1] if v_in_block else None
+
+        # Pack Voltage in block
+        pack_v_in_block = [v for t_v, v in pack_v_samples if ts_start <= t_v <= ts_end]
+        if not pack_v_in_block:
+            last_p = [v for t_v, v in pack_v_samples if t_v <= ts_end]
+            pack_v_in_block = [last_p[-1]] if last_p else []
+
+        max_pack_v = max(pack_v_in_block) if pack_v_in_block else None
+        delta_v = (max_pack_v - final_term_v) if (max_pack_v is not None and final_term_v is not None) else None
+
+        if max_pack_v is not None and delta_v is not None:
+            pack_v_delta_multiline = (
+                f"Max Pack Voltage : {max_pack_v:.2f}V\n"
+                f"Delta During Precharge : {delta_v:.2f}V"
+            )
+        elif max_pack_v is not None:
+            pack_v_delta_multiline = f"Max Pack Voltage : {max_pack_v:.2f}V\nDelta During Precharge : N/A"
+        else:
+            pack_v_delta_multiline = "Max Pack Voltage : N/A\nDelta During Precharge : N/A"
+
+        # -----------------------------------------------------
         # PASS logic: ANY 2 consecutive samples <= 0.25A
         # -----------------------------------------------------
         status = "FAIL"
@@ -190,14 +251,21 @@ for i in range(1, len(df)):
                 break
 
         multiline = format_currents_multiline(curr_values.tolist())
+        timestamps_multiline = f"Start: {block.iloc[0].full_ts}\nEnd: {block.iloc[-1].full_ts}"
 
         events.append({
             "Start_Timestamp": block.iloc[0].full_ts,
             "End_Timestamp": block.iloc[-1].full_ts,
+            "Timestamps_Multiline": timestamps_multiline,
             "Duration (s)": round(dur_s, 3),
             "Max_Current (A)": round(max_curr, 6),
             "End_Current (A)": round(end_curr, 6),
             "Currents_Multiline": multiline,
+            "Terminal_Sensing_V_Multiline": v_multiline,
+            "Max_Pack_Voltage (V)": round(max_pack_v, 2) if max_pack_v is not None else None,
+            "Final_Terminal_Sensing_V (V)": round(final_term_v, 2) if final_term_v is not None else None,
+            "Precharge_Delta_V (V)": round(delta_v, 2) if delta_v is not None else None,
+            "Pack_V_&_Delta_Multiline": pack_v_delta_multiline,
             "Status": status,
             "Precharge_Fail_Flag": fail_flag
         })
@@ -286,13 +354,20 @@ table_lines = [
 ]
 
 for e in events:
-    table_lines.append(row("Start_Timestamp", e["Start_Timestamp"]))
-    table_lines.append(row("End_Timestamp", e["End_Timestamp"]))
+    for line in e["Timestamps_Multiline"].split("\n"):
+        table_lines.append(row("Timestamps", line))
+
     table_lines.append(row("Duration (s)", str(e["Duration (s)"])))
     table_lines.append(row("Max_Current (A)", str(e["Max_Current (A)"])))
 
     for line in e["Currents_Multiline"].split("\n"):
         table_lines.append(row("Currents (A)", line))
+
+    for line in e["Terminal_Sensing_V_Multiline"].split("\n"):
+        table_lines.append(row("Terminal_Sensing_V (V)", line))
+
+    for line in e["Pack_V_&_Delta_Multiline"].split("\n"):
+        table_lines.append(row("Pack_V_&_Delta", line))
 
     table_lines.append(row("Status", e["Status"]))
     table_lines.append(row("Precharge_Fail_Flag", e["Precharge_Fail_Flag"]))
@@ -307,11 +382,12 @@ with open(os.path.join(folder, "Precharge_Process_summary.json"), "w", encoding=
 if events:
 
     headers = [
-        "Start_Timestamp",
-        "End_Timestamp",
+        "Timestamps\n(Start / End)",
         "Duration (s)",
         "Max_Current (A)",
         "Currents (A)",
+        "Terminal_Sensing_V (V)",
+        "Max_Pack_V_&_Delta",
         "Status",
         "Precharge_Fail_Flag"
     ]
@@ -321,18 +397,27 @@ if events:
 
     for e in events:
         rows.append([
-            e["Start_Timestamp"],
-            e["End_Timestamp"],
+            e["Timestamps_Multiline"],
             e["Duration (s)"],
             e["Max_Current (A)"],
             e["Currents_Multiline"],
+            e["Terminal_Sensing_V_Multiline"],
+            e["Pack_V_&_Delta_Multiline"],
             e["Status"],
             e["Precharge_Fail_Flag"]
         ])
-        line_counts.append(get_line_count(e["Currents_Multiline"]))
+        lc = max(
+            get_line_count(e["Timestamps_Multiline"]),
+            get_line_count(e["Currents_Multiline"]),
+            get_line_count(e["Terminal_Sensing_V_Multiline"]),
+            get_line_count(e["Pack_V_&_Delta_Multiline"])
+        )
+        line_counts.append(lc)
 
-    fig_height = 2 + sum(0.40 * lc for lc in line_counts)
-    fig_width = 16
+    fig_height = 2.5 + sum(0.40 * lc for lc in line_counts)
+    fig_width = 22
+
+    col_widths = [0.15, 0.07, 0.08, 0.17, 0.17, 0.22, 0.06, 0.08]
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     ax.axis("off")
@@ -340,6 +425,7 @@ if events:
     tbl = ax.table(
         cellText=rows,
         colLabels=headers,
+        colWidths=col_widths,
         loc="center",
         cellLoc="left"
     )
@@ -348,13 +434,17 @@ if events:
     tbl.set_fontsize(9)
     tbl.scale(1.0, 1.2)
 
+    # Double header row height so header text is never cut off
+    for col in range(len(headers)):
+        tbl[0, col].set_height(tbl[0, col].get_height() * 2.2)
+
     for (r, c), cell in tbl.get_celld().items():
         cell.set_edgecolor("black")
         if r == 0:
             cell.set_facecolor("#1FA37A")
             cell.set_text_props(weight="bold", color="white")
 
-    # Set row height based on line count
+    # Set data row height based on line count
     for i, lc in enumerate(line_counts):
         row_idx = i + 1
         base_height = tbl[row_idx, 0].get_height()
