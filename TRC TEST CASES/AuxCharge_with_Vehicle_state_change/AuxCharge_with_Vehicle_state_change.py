@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Callable
+from collections import Counter
 
 import numpy as np
 import pandas as pd
@@ -55,9 +56,13 @@ AUXV_CAN_ID_606 = 0x0606
 AUXV_CAN_ID_408 = 0x0408
 selected_aux_id = None
 
+# BMS Aux Voltage: BO_ 334 (0x014E / 0x0334) SG_ BMS_AuxVoltage : 48|16@1+ (0.1,0)
+BMS_AUX_CAN_IDS = (0x014E, 0x0334)
+
 AUXV_SF = 0.01                    # AuxVoltage (0.01,0)
 AUXV_MSB_IDX = 1                  # AuxVoltage MSB at byte 1 (bytes 1-2 big-endian)
 MIN_VALID_AUX = 1.0               # ignore Aux readings below this unless BMS state is 3
+MAX_AUX_DELTA_THRESH = 2.0        # Max allowed delta between Aux V and BMS Aux V (V)
 
 # =====================================================
 # TRC REGEX
@@ -105,6 +110,12 @@ def decode_auxv(data: list[int]) -> float:
     # bytes 1..2 big-endian, scaled 0.01
     raw = (data[AUXV_MSB_IDX] << 8) | data[AUXV_MSB_IDX + 1]
     return raw * AUXV_SF
+
+
+def decode_bms_auxv(data: list[int]) -> float:
+    # SG_ BMS_AuxVoltage : 48|16@1+ (0.1,0) -> byte 6,7 little endian
+    raw = data[6] | (data[7] << 8)
+    return raw * 0.1
 
 
 # =====================================================
@@ -159,20 +170,37 @@ def process_trc(
     Single pass over the TRC to compute:
       - min Aux between consecutive 0109 state 3 -> 3
       - min Aux overall
-      - downsampled rows for plotting (SoC, BMS state, pack V, last Aux)
+      - max delta between Aux voltage and BMS Aux voltage (valid when BMS state == 3)
+      - downsampled rows for plotting (SoC, BMS state, Aux voltage, BMS Aux voltage)
+      - TRUE max Aux voltage seen (unfiltered, matches original standalone scan)
+      - frequency count of every unfiltered Aux voltage reading > 0, rounded to 2dp
+        (lets the caller look up "how many times did the min value occur" without
+        a second pass over the file)
     """
     best_between_val = None
     best_between_ts = None
     best_all_val = None
     best_all_ts = None
 
+    max_bms_delta_val = None
+    max_bms_delta_ts = None
+    max_bms_delta_aux_v = None
+    max_bms_delta_bms_aux_v = None
+
     prev_0109_ts = None
     prev_bms_state = None
     aux_between = []
     last_aux = None
+    last_bms_aux = None
 
     bms_plot_rows = []
     bms_seen = 0
+
+    # Unfiltered Aux-voltage tracking (mirrors the old standalone re-scan exactly:
+    # every decoded value from the selected Aux CAN ID counts here, regardless of
+    # the MIN_VALID_AUX / BMS-state validity filter applied below).
+    raw_aux_max = 0.0
+    aux_value_counts: Counter = Counter()
 
     with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
         for line_idx, line in enumerate(f, 1):
@@ -183,12 +211,35 @@ def process_trc(
             if progress_cb:
                 progress_cb(len(line))
 
+            # BMS Aux Voltage Frame (valid only if BMS state is 3)
+            if canid in BMS_AUX_CAN_IDS and dlc >= 8:
+                if prev_bms_state == 3:
+                    bms_aux_v = decode_bms_auxv(data)
+                    last_bms_aux = bms_aux_v
+                    if last_aux is not None:
+                        delta = abs(last_aux - bms_aux_v)
+                        if max_bms_delta_val is None or delta > max_bms_delta_val:
+                            max_bms_delta_val = delta
+                            max_bms_delta_ts = ts
+                            max_bms_delta_aux_v = last_aux
+                            max_bms_delta_bms_aux_v = bms_aux_v
+                else:
+                    last_bms_aux = None
+                continue
+
             if (
                 selected_aux_id is not None
                 and canid == selected_aux_id
                 and dlc >= AUXV_MSB_IDX + 2
             ):
                 aux_v = decode_auxv(data)
+
+                # --- unfiltered tracking (same values a standalone re-scan would see) ---
+                if aux_v > raw_aux_max:
+                    raw_aux_max = aux_v
+                if aux_v > 0:
+                    aux_value_counts[round(aux_v, 2)] += 1
+
                 # discard Aux <1V unless current BMS state is known to be 3
                 is_valid_aux = (aux_v >= MIN_VALID_AUX) or (prev_bms_state == 3)
                 if not is_valid_aux:
@@ -201,6 +252,15 @@ def process_trc(
 
                 if prev_0109_ts is not None:
                     aux_between.append((ts, aux_v))
+
+                # Check delta with BMS Aux V if BMS state is 3
+                if prev_bms_state == 3 and last_bms_aux is not None:
+                    delta = abs(aux_v - last_bms_aux)
+                    if max_bms_delta_val is None or delta > max_bms_delta_val:
+                        max_bms_delta_val = delta
+                        max_bms_delta_ts = ts
+                        max_bms_delta_aux_v = aux_v
+                        max_bms_delta_bms_aux_v = last_bms_aux
                 continue
 
             if canid == BMS_CAN_ID and dlc >= 8:
@@ -213,6 +273,9 @@ def process_trc(
                         if best_between_val is None or vmin < best_between_val:
                             best_between_val, best_between_ts = vmin, tmin
 
+                if bms_state != 3:
+                    last_bms_aux = None
+
                 aux_between = []
                 prev_0109_ts = ts
                 prev_bms_state = bms_state
@@ -222,21 +285,31 @@ def process_trc(
                         "SoC": soc,
                         "BMS_State": bms_state,
                         "AuxVoltage_V": last_aux,
+                        "BMS_AuxVoltage_V": last_bms_aux if bms_state == 3 else np.nan,
                     })
 
                 bms_seen += 1
 
-    return (best_between_val, best_between_ts), (best_all_val, best_all_ts), bms_plot_rows, best_all_val
+    return (
+        (best_between_val, best_between_ts),
+        (best_all_val, best_all_ts),
+        (max_bms_delta_val, max_bms_delta_ts, max_bms_delta_aux_v, max_bms_delta_bms_aux_v),
+        bms_plot_rows,
+        best_all_val,
+        raw_aux_max,
+        aux_value_counts,
+    )
 
 
 def build_plot_df(rows: list[dict]) -> pd.DataFrame:
     if not rows:
-        return pd.DataFrame(columns=["SoC", "BMS_State", "AuxVoltage_V"])
+        return pd.DataFrame(columns=["SoC", "BMS_State", "AuxVoltage_V", "BMS_AuxVoltage_V"])
 
     df = pd.DataFrame(rows)
     df["SoC"] = pd.to_numeric(df.get("SoC"), errors="coerce")
     df["BMS_State"] = pd.to_numeric(df.get("BMS_State"), errors="coerce")
     df["AuxVoltage_V"] = pd.to_numeric(df.get("AuxVoltage_V"), errors="coerce")
+    df["BMS_AuxVoltage_V"] = pd.to_numeric(df.get("BMS_AuxVoltage_V"), errors="coerce")
 
     # keep TRC/frame order (already in time order from build_plot_df)
     df = df.dropna(subset=["SoC"]).reset_index(drop=True)
@@ -260,6 +333,7 @@ def save_plot_split_left_axis(df: pd.DataFrame, out_path: str):
     d["SoC"] = pd.to_numeric(d.get("SoC"), errors="coerce")
     d["BMS_State"] = pd.to_numeric(d.get("BMS_State"), errors="coerce")
     d["AuxVoltage_V"] = pd.to_numeric(d.get("AuxVoltage_V"), errors="coerce")
+    d["BMS_AuxVoltage_V"] = pd.to_numeric(d.get("BMS_AuxVoltage_V"), errors="coerce")
 
     # keep TRC/frame order (already time ordered from build_plot_df)
     d = d.dropna(subset=["SoC"]).reset_index(drop=True)
@@ -267,8 +341,9 @@ def save_plot_split_left_axis(df: pd.DataFrame, out_path: str):
     soc_vals = d["SoC"].to_numpy()
 
     aux = d["AuxVoltage_V"]
+    bms_aux = d["BMS_AuxVoltage_V"]
     bms = d["BMS_State"].clip(lower=0, upper=5)
-    aux_valid = aux.dropna()
+    aux_valid = pd.concat([aux.dropna(), bms_aux.dropna()])
 
     # Focus display range: default 8-15V, tighten to +/-1V around flat data
     aux_lo_val, aux_hi_val = 8.0, 15.0
@@ -302,9 +377,19 @@ def save_plot_split_left_axis(df: pd.DataFrame, out_path: str):
         np.nan,
     )
 
+    bms_aux_clipped = bms_aux.clip(lower=aux_lo_val, upper=aux_hi_val)
+    bms_aux_y = np.where(
+        bms_aux.notna(),
+        aux_lo + ((bms_aux_clipped - aux_lo_val) / aux_span) * (aux_hi - aux_lo),
+        np.nan,
+    )
+
     fig, ax = plt.subplots(figsize=(14, 6))
 
     ax.plot(x, aux_y, linewidth=1.4, label="Aux Voltage V", color="#1f77b4")
+    if not bms_aux.dropna().empty:
+        ax.plot(x, bms_aux_y, linewidth=1.4, label="BMS Aux Voltage V", color="#2ca02c", linestyle="--")
+
     ax.step(x, bms_y, where="post", linewidth=1.2, label="BMS State", color="#ff7f0e")
 
     # X ticks show SoC values in frame order (categorical-like)
@@ -343,23 +428,47 @@ def save_plot_split_left_axis(df: pd.DataFrame, out_path: str):
     plt.close(fig)
 
 
-def overall_result(min_between, min_all) -> str:
-    # PASS only if both conditions pass; if any missing -> FAIL (no extra rule added)
+def overall_result(
+    min_between: Optional[float],
+    min_all: Optional[float],
+    max_bms_aux_delta: Optional[float] = None,
+) -> str:
+    # PASS only if all conditions pass; if any missing or delta > 2V -> FAIL
     if min_between is None or min_all is None:
         return "FAIL"
-    if (min_between >= THRESH_BETWEEN_3_TO_3) and (min_all >= THRESH_OVERALL):
+    if (
+        (min_between >= THRESH_BETWEEN_3_TO_3)
+        and (min_all >= THRESH_OVERALL)
+        and (max_bms_aux_delta is None or max_bms_aux_delta <= MAX_AUX_DELTA_THRESH)
+    ):
         return "PASS"
     return "FAIL"
 
 
-def save_outputs(result: str, summary_text: str, plot_df: pd.DataFrame):
+def save_outputs(
+    result: str,
+    summary_text: str,
+    plot_df: pd.DataFrame,
+    max_delta_val: Optional[float] = None,
+    max_delta_ts=None,
+    max_delta_aux_v: Optional[float] = None,
+    max_delta_bms_aux_v: Optional[float] = None,
+):
     cfg = OUTPUTS["AUXCHARGE WITH VEHICLE STATE CHANGE"]
     result_path = SCRIPT_DIR / cfg["result"]
     summary_path = SCRIPT_DIR / cfg["summary"]
     graph_path = SCRIPT_DIR / cfg["graph"]
 
+    res_dict = {
+        "Result": result,
+        "Max_Aux_vs_BMS_Aux_Delta_V": round(max_delta_val, 2) if max_delta_val is not None else None,
+        "Max_Aux_Delta_Timestamp": str(max_delta_ts) if max_delta_ts is not None else None,
+        "Aux_Voltage_at_Max_Delta": round(max_delta_aux_v, 2) if max_delta_aux_v is not None else None,
+        "BMS_Aux_Voltage_at_Max_Delta": round(max_delta_bms_aux_v, 2) if max_delta_bms_aux_v is not None else None,
+    }
+
     with open(result_path, "w", encoding="utf-8") as f:
-        json.dump({"Result": result}, f, indent=2)
+        json.dump(res_dict, f, indent=2)
 
     # store summary as list for readable multi-line JSON
     with open(summary_path, "w", encoding="utf-8") as f:
@@ -401,7 +510,15 @@ def main():
 
     progress_cb = progress_by_bytes(trc_path, step=PROGRESS_STEP)
 
-    (min_between, ts_between), (min_all, ts_all), plot_rows, _ = process_trc(
+    (
+        (min_between, ts_between),
+        (min_all, ts_all),
+        (max_bms_delta_val, max_bms_delta_ts, max_bms_delta_aux_v, max_bms_delta_bms_aux_v),
+        plot_rows,
+        _,
+        raw_aux_max,
+        aux_value_counts,
+    ) = process_trc(
         trc_path,
         selected_aux_id,
         PLOT_SAMPLE_EVERY,
@@ -410,28 +527,19 @@ def main():
     plot_df = build_plot_df(plot_rows)
 
     # ===== Aux Voltage TXT OUTPUT =====
+    # NOTE: aux_max / count used to be recomputed here with two extra full
+    # re-reads of the TRC file (after the progress-tracked pass had already
+    # finished, which is why progress looked "stuck" past ~98.5%). Both
+    # values are now taken directly from the single pass done in
+    # process_trc() above — same numbers, no extra I/O.
     p = Path(__file__).resolve()
 
     for parent in [p] + list(p.parents):
         history = parent / "History"
         if history.exists() and history.is_dir():
 
-            # TRUE MAX from full TRC
-            aux_max = 0
-
-            with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    p_line = parse_trc_line(line)
-                    if not p_line:
-                        continue
-
-                    _, canid, dlc, data = p_line
-
-                    if canid == selected_aux_id and dlc >= AUXV_MSB_IDX + 2:
-                        v = decode_auxv(data)
-
-                        if v > aux_max:
-                            aux_max = v
+            # TRUE MAX from full TRC (from single-pass tracking)
+            aux_max = raw_aux_max
 
             # TRUE MIN
             if min_all is not None and min_all > 0:
@@ -439,22 +547,10 @@ def main():
             else:
                 aux_min = 0
 
-            # Count occurrences of minimum
+            # Count occurrences of minimum (from single-pass tracking)
             count = 0
             if min_all is not None and min_all > 0:
-                with open(trc_path, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        p_line = parse_trc_line(line)
-                        if not p_line:
-                            continue
-
-                        _, canid, dlc, data = p_line
-
-                        if canid == selected_aux_id and dlc >= AUXV_MSB_IDX + 2:
-                            v = decode_auxv(data)
-
-                            if v > 0 and round(v, 2) == round(min_all, 2):
-                                count += 1
+                count = aux_value_counts.get(round(min_all, 2), 0)
 
             if min_all is not None:
                 text = (
@@ -496,10 +592,30 @@ def main():
             f"Timestamp: {ts_all} (PASS condition {THRESH_OVERALL})"
         )
 
-    summary_text = line1 + "\n\n" + line2
-    result = overall_result(min_between, min_all)
+    if max_bms_delta_val is None:
+        line3 = (
+            f"Highest delta between Aux voltage vs BMS aux voltage: N/A V "
+            f"(PASS condition <= {MAX_AUX_DELTA_THRESH}V)"
+        )
+    else:
+        line3 = (
+            f"Highest delta between Aux voltage vs BMS aux voltage is {max_bms_delta_val:.2f}V "
+            f"(Aux: {max_bms_delta_aux_v:.2f}V, BMS Aux: {max_bms_delta_bms_aux_v:.2f}V), "
+            f"Timestamp: {max_bms_delta_ts} (PASS condition <= {MAX_AUX_DELTA_THRESH}V)"
+        )
 
-    result_path, summary_path, graph_path = save_outputs(result, summary_text, plot_df)
+    summary_text = line1 + "\n\n" + line2 + "\n\n" + line3
+    result = overall_result(min_between, min_all, max_bms_delta_val)
+
+    result_path, summary_path, graph_path = save_outputs(
+        result,
+        summary_text,
+        plot_df,
+        max_bms_delta_val,
+        max_bms_delta_ts,
+        max_bms_delta_aux_v,
+        max_bms_delta_bms_aux_v,
+    )
     print("PROGRESS 100.0", flush=True)
 
     print("Done.")
