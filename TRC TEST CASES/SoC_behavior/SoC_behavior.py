@@ -196,29 +196,76 @@ while i < n:
 
 df_valid = df_valid[keep_mask].reset_index(drop=True)
 
-# Ensure all delta calculations only use valid SoC transitions (both previous and current BMS != 0)
+# -----------------------------------------------------
+# BUILD ALL VALID SoC TRANSITIONS (dt < 3000 ms)
+# -----------------------------------------------------
 soc_arr = df_valid["SoC"].values
 ts_arr = df_valid["ts"].values
 bms_arr = df_valid["BMS"].values
+full_ts_arr = df_valid["full_ts"].values
 
-dsoc_arr = abs(soc_arr[1:] - soc_arr[:-1])
+dsoc_arr = np.abs(soc_arr[1:] - soc_arr[:-1])
 dt_arr = ts_arr[1:] - ts_arr[:-1]
-bms_prev = bms_arr[:-1]
-bms_next = bms_arr[1:]
 
-# Only consider transitions where both previous and current BMS != 0 and dt < 3000 ms
-mask = (dt_arr < 3000) & (bms_prev != 0) & (bms_next != 0)
+mask = dt_arr < 3000
 if not mask.any():
     print("No valid delta found!")
     sys.exit(1)
 
 valid_indices = mask.nonzero()[0]
-max_delta_idx = valid_indices[dsoc_arr[mask].argmax()]
-delta = dsoc_arr[max_delta_idx]
-dt_ms = dt_arr[max_delta_idx]
-prev_soc = soc_arr[max_delta_idx]
-curr_soc = soc_arr[max_delta_idx + 1]
-idx = max_delta_idx
+
+SPECIAL_FROM = 99.0
+SPECIAL_TO = 100.0
+
+
+def is_special_case(prev_soc, curr_soc):
+    """99% -> 100% direct jump is an allowed/expected special case."""
+    return round(prev_soc, 2) == SPECIAL_FROM and round(curr_soc, 2) == SPECIAL_TO
+
+
+transitions = []
+for i in valid_indices:
+    p_soc = float(soc_arr[i])
+    c_soc = float(soc_arr[i + 1])
+    d = float(dsoc_arr[i])
+    dt_val = float(dt_arr[i])
+    transitions.append({
+        "idx": int(i),
+        "prev_soc": p_soc,
+        "curr_soc": c_soc,
+        "delta": d,
+        "dt_ms": dt_val,
+        "timestamp": full_ts_arr[i + 1],
+        "ts_ms": float(ts_arr[i + 1]),
+        "is_special": is_special_case(p_soc, c_soc),
+        "higher_soc": max(p_soc, c_soc),
+    })
+
+# Rank by delta (desc); ties broken by the transition that happened at the
+# higher SoC (desc)
+transitions_sorted = sorted(
+    transitions, key=lambda t: (-t["delta"], -t["higher_soc"])
+)
+
+TOP_N = 3
+top_transitions = transitions_sorted[:TOP_N]
+
+# All occurrences of the 99% -> 100% special case (always reported/plotted,
+# even if not within the top-N by delta size)
+special_transitions = [t for t in transitions if t["is_special"]]
+
+# Deltas that are NOT the allowed special case — these are what determine
+# PASS/FAIL against the 0.1% threshold
+non_special_deltas = [t["delta"] for t in transitions if not t["is_special"]]
+max_non_special_delta = max(non_special_deltas) if non_special_deltas else 0.0
+
+# Rank-1 transition (kept for backward-compatible fields / txt summary)
+top1 = top_transitions[0]
+delta = top1["delta"]
+dt_ms = top1["dt_ms"]
+prev_soc = top1["prev_soc"]
+curr_soc = top1["curr_soc"]
+idx = top1["idx"]
 
 
 def detect_soc_stuck_odo(df, odo_events, min_km=4.0, max_soc_delta=1.0, max_odo_gap_ms=3000):
@@ -293,27 +340,6 @@ def detect_soc_stuck_odo(df, odo_events, min_km=4.0, max_soc_delta=1.0, max_odo_
 odo_soc_stuck, odo_stuck_first_soc, odo_stuck_first_ts = detect_soc_stuck_odo(df, odo_events)
 
 
-# Vectorized delta calculation for speed
-soc_arr = df_valid["SoC"].values
-ts_arr = df_valid["ts"].values
-
-dsoc_arr = abs(soc_arr[1:] - soc_arr[:-1])
-dt_arr = ts_arr[1:] - ts_arr[:-1]
-
-# Only consider transitions with dt < 3000 ms
-mask = dt_arr < 3000
-if not mask.any():
-    print("No valid delta found!")
-    sys.exit(1)
-
-valid_indices = mask.nonzero()[0]
-max_delta_idx = valid_indices[dsoc_arr[mask].argmax()]
-delta = dsoc_arr[max_delta_idx]
-dt_ms = dt_arr[max_delta_idx]
-prev_soc = soc_arr[max_delta_idx]
-curr_soc = soc_arr[max_delta_idx + 1]
-idx = max_delta_idx
-
 def save_txt(text: str):
     from pathlib import Path
 
@@ -329,20 +355,51 @@ def save_txt(text: str):
 
 # -----------------------------------------------------
 # SUMMARY DATA
+# -----------------------------------------------------
+def transition_dict(t, rank=None):
+    d = {
+        "Rank": rank,
+        "Prev_SoC": round(t["prev_soc"], 2),
+        "Curr_SoC": round(t["curr_soc"], 2),
+        "Delta_SoC": round(t["delta"], 2),
+        "Delta_Time_ms": round(t["dt_ms"], 2),
+        "Timestamp": t["timestamp"],
+        "Special_Case_99_to_100": bool(t["is_special"]),
+    }
+    if rank is None:
+        del d["Rank"]
+    return d
+
+
+top3_summary = [transition_dict(t, rank=r + 1) for r, t in enumerate(top_transitions)]
+special_summary = [transition_dict(t) for t in special_transitions]
+
 summary = {
     "Start_SoC": round(df["SoC"].iloc[0], 2),
     "Final_SoC": round(df["SoC"].iloc[-1], 2),
     "Max_Delta_SoC": round(delta, 2),
     "SoC_Transition": f"{round(prev_soc,2)} % to {round(curr_soc,2)} %",
-    "Timestamp_of_Max_Delta": df_valid.loc[idx + 1, "full_ts"],  # t2 timestamp where SoC observed as 0.0
+    "Timestamp_of_Max_Delta": top1["timestamp"],
     "Delta_Time_ms": round(dt_ms, 2),
+    "Top3_SoC_Deltas": top3_summary,
+    "Special_Case_Transitions": special_summary,
+    "Max_Non_Special_Delta_SoC": round(max_non_special_delta, 2),
     "ODO_SoC_Stuck": bool(odo_soc_stuck),
     "ODO_Stuck_First_SoC": odo_stuck_first_soc,
     "ODO_Stuck_First_Timestamp": odo_stuck_first_ts,
 }
+
+top3_txt_lines = []
+for t in top3_summary:
+    tag = " [SPECIAL 99->100, allowed]" if t["Special_Case_99_to_100"] else ""
+    top3_txt_lines.append(
+        f"  Rank {t['Rank']}: {t['Delta_SoC']}%  "
+        f"({t['Prev_SoC']}% to {t['Curr_SoC']}%) @ {t['Timestamp']}{tag}"
+    )
+
 txt_content = (
     f"SoC Range : (Initial SoC {summary['Start_SoC']}% & Final SoC {summary['Final_SoC']}%)\n"
-    f"Max SoC Delta : \"{summary['Max_Delta_SoC']}%\"\n"
+    f"Top 3 SoC Deltas :\n" + "\n".join(top3_txt_lines) + "\n"
     f"Any SoC stuck : "
     f"{'Yes (' + str(summary['ODO_Stuck_First_SoC']) + '%)' if summary['ODO_SoC_Stuck'] else 'No'}"
 )
@@ -352,10 +409,12 @@ save_txt(txt_content)
 # -----------------------------------------------------
 # SAVE PASS/FAIL RESULT → SoC_results.json
 # FAIL if:
-#  - Max SoC jump > 0.1 %, OR
+#  - Max SoC jump (excluding the allowed 99%->100% special case) > 0.1 %, OR
 #  - ODO-based SoC stuck is detected.
+# The 99% -> 100% direct jump (delta 1%) is always reported/plotted but never
+# by itself causes a FAIL.
 # -----------------------------------------------------
-result = "FAIL" if (summary["Max_Delta_SoC"] > 0.1 or odo_soc_stuck) else "PASS"
+result = "FAIL" if (max_non_special_delta > 0.1 or odo_soc_stuck) else "PASS"
 
 result_json_path = os.path.join(folder, "SoC_results.json")
 
@@ -364,6 +423,9 @@ with open(result_json_path, "w", encoding="utf-8") as f:
         {
             "Result": result,
             "Max_SoC_Delta": summary["Max_Delta_SoC"],
+            "Max_Non_Special_Delta_SoC": summary["Max_Non_Special_Delta_SoC"],
+            "Top3_SoC_Deltas": top3_summary,
+            "Special_Case_Transitions": special_summary,
             "ODO_SoC_Stuck": bool(odo_soc_stuck),
             "ODO_Stuck_First_SoC": odo_stuck_first_soc,
             "ODO_Stuck_First_Timestamp": odo_stuck_first_ts,
@@ -403,8 +465,22 @@ table_lines = [
     ),
     make_row("SoC Transition", summary["SoC_Transition"]),
     make_row("Delta Timestamp", summary["Timestamp_of_Max_Delta"]),
-    border
+    border,
 ]
+
+for t in top3_summary:
+    tag = " *" if t["Special_Case_99_to_100"] else ""
+    table_lines.append(
+        make_row(
+            f"Rank {t['Rank']} Delta (%)",
+            f"{t['Delta_SoC']}% ({t['Prev_SoC']}->{t['Curr_SoC']}){tag}",
+        )
+    )
+table_lines.append(border)
+
+if special_summary:
+    table_lines.append(make_row("Special 99->100 Jumps", str(len(special_summary))))
+    table_lines.append(border)
 
 json_summary_path = os.path.join(folder, "soc_summary.json")
 
@@ -417,22 +493,54 @@ print(f"ASCII Summary saved to JSON: {json_summary_path}")
 # SOC PLOT
 # -----------------------------------------------------
 plt.figure(figsize=(12, 5))
-# Only plot SoC values that are actually considered for SoC delta computation
+# Background line: all SoC values that participate in the transition set
 valid_plot_indices = np.unique(np.concatenate([valid_indices, valid_indices + 1]))
 ts_plot = df_valid["ts"].values[valid_plot_indices]
 soc_plot = df_valid["SoC"].values[valid_plot_indices]
 plt.plot(ts_plot, soc_plot, linewidth=2, label="SoC (Delta Computed)")
-plt.scatter(df_valid.loc[idx, "ts"], df_valid.loc[idx, "SoC"], s=90, c="red", zorder=5, label="Max SoC Jump")
-plt.annotate(
-    f"Delta: {delta:.2f}% ({prev_soc:.2f}% to {curr_soc:.2f}%)",
-    (df_valid.loc[idx, "ts"], df_valid.loc[idx, "SoC"]),
-    xytext=(10, 10),
-    textcoords="offset points",
-    fontsize=9,
-    color="red",
-)
 
-plt.title("SoC vs Time (Delta Computed Only)")
+rank_colors = {1: "red", 2: "orange", 3: "purple"}
+plotted_idx = set()
+
+for rank_i, t in enumerate(top_transitions, start=1):
+    color = rank_colors.get(rank_i, "brown")
+    marker_x = df_valid.loc[t["idx"], "ts"]
+    marker_y = df_valid.loc[t["idx"], "SoC"]
+    label = f"Rank {rank_i} Jump ({t['delta']:.2f}%)"
+    if t["is_special"]:
+        label += " [special]"
+    plt.scatter(marker_x, marker_y, s=90, c=color, zorder=5, label=label)
+    plt.annotate(
+        f"#{rank_i}: {t['delta']:.2f}% ({t['prev_soc']:.2f}% to {t['curr_soc']:.2f}%)",
+        (marker_x, marker_y),
+        xytext=(10, 10 + 15 * (rank_i - 1)),
+        textcoords="offset points",
+        fontsize=9,
+        color=color,
+    )
+    plotted_idx.add(t["idx"])
+
+# Always plot any 99->100 special-case jumps, even if outside the top-3
+for t in special_transitions:
+    if t["idx"] in plotted_idx:
+        continue
+    marker_x = df_valid.loc[t["idx"], "ts"]
+    marker_y = df_valid.loc[t["idx"], "SoC"]
+    plt.scatter(
+        marker_x, marker_y, s=90, c="green", marker="*", zorder=5,
+        label="Special Jump 99%->100% (allowed)",
+    )
+    plt.annotate(
+        f"Special: {t['delta']:.2f}% ({t['prev_soc']:.2f}% to {t['curr_soc']:.2f}%)",
+        (marker_x, marker_y),
+        xytext=(10, -15),
+        textcoords="offset points",
+        fontsize=9,
+        color="green",
+    )
+    plotted_idx.add(t["idx"])
+
+plt.title("SoC vs Time (Top 3 Deltas + Special 99%->100% Cases)")
 plt.xlabel("Time")
 plt.ylabel("SoC (%)")
 plt.grid(True, linestyle="--", alpha=0.4)
@@ -446,7 +554,14 @@ ax.xaxis.set_major_locator(ticker.LinearLocator(12))
 ax.xaxis.set_major_formatter(ticker.FuncFormatter(fmt_time))
 plt.xticks(rotation=40)
 
-plt.legend()
+# De-duplicate legend entries (multiple special markers would repeat the label)
+handles, labels = ax.get_legend_handles_labels()
+seen = {}
+for h, l in zip(handles, labels):
+    if l not in seen:
+        seen[l] = h
+plt.legend(seen.values(), seen.keys())
+
 plt.tight_layout()
 
 plot_path = os.path.join(folder, "soc_plot.png")
